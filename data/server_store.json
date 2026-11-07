@@ -1,0 +1,42 @@
+{
+  "savedAt": "2026-11-02T17:27:21.253Z",
+  "users": [
+    {
+      "id": "admin-main",
+      "name": "VeggieConnect Central Admin Desk",
+      "email": "admin@gmail.com",
+      "phone": "+63 900 000 0000",
+      "role": "admin",
+      "location": "Dumaguete City Proper (Central Depot)",
+      "avatar": "",
+      "status": "active",
+      "verified": true,
+      "password_hash": "8f94e6b12a:1849a9fb92a"
+    },
+    {
+      "id": "user-1793626065398",
+      "name": "Jasper Ablong",
+      "email": "jasper@gmail.com",
+      "phone": "09657955833",
+      "role": "farmer",
+      "location": "Dumaguete City, Negros Oriental",
+      "latitude": 9.3068,
+      "longitude": 123.3054,
+      "farmName": "Jasper Farm",
+      "avatar": "",
+      "status": "active",
+      "verified": true,
+      "password_hash": "1025211d6ff3683461930e1bc332ff4b:db03e390e3c8b5f55a0fd949e9dab2c7b6c3699c88db9abc5c8558315dea0bbbbc016251705ac1ba9e0c7e59742b07fa9b54ab84440845d2b745d3ab12da2703"
+    }
+  ],
+  "products": [],
+  "orders": [],
+  "transportJobs": [],
+  "messages": [],
+  "supermarket": {
+    "storeName": "VeggieConnect Central Sourcing Hub",
+    "address": "Rizal Boulevard & Port Area, Dumaguete City Proper, Negros Oriental",
+    "latitude": 9.308,
+    "longitude": 123.3105
+  }
+}

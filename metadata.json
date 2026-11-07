@@ -1,0 +1,8 @@
+{
+  "name": "VeggieConnect3 Nov 2",
+  "description": "Direct vegetable market mobile application connecting farmers and buyers with live chat, farm-gate orders, and administrative user management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

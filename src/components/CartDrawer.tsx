@@ -99,7 +99,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       farmerId: 'admin-main',
     }));
 
-    // Step 1 (Buyer Request): Buyer submits a request/order to the Admin detailing vegetables & quantities
+    // Buyer Request: Buyer submits a request/order to the Admin detailing vegetables & quantities
     const newOrder: Order = {
       id: `VC-REQ-${Math.floor(1000 + Math.random() * 9000)}`,
       buyerId: currentUser?.id || 'user-buyer-1',
@@ -113,7 +113,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       subtotal,
       deliveryFee: 0,
       totalAmount,
-      status: 'pending', // Step 1: Buyer Request Submitted, waiting for Admin Processing
+      status: 'pending', // Buyer Request Submitted, waiting for Admin Processing
       createdAt: new Date().toISOString(),
       farmerId: 'admin-main',
       farmName: 'VeggieConnect Central Market',
@@ -141,7 +141,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
               Vegetable Purchase Request ({cart.reduce((s, i) => s + i.quantity, 0)} items)
             </h2>
             <p className="text-[10px] text-emerald-700 font-bold">
-              Step 1 of Buyer-Led Marketplace Workflow
+              Review your basket before submitting to the Admin
             </p>
           </div>
         </div>
@@ -154,20 +154,6 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
             <Trash2 className="w-3.5 h-3.5" /> Clear All
           </button>
         )}
-      </div>
-
-      {/* 4-Step Workflow Explainer Banner */}
-      <div className="bg-emerald-50 border border-emerald-200/90 rounded-2xl p-3 text-xs text-emerald-950 mb-3 space-y-1">
-        <div className="font-extrabold text-[11px] text-emerald-900 flex items-center gap-1.5">
-          <Store className="w-3.5 h-3.5 text-emerald-700" />
-          <span>Buyer-Led Request & Admin Fulfillment Flow</span>
-        </div>
-        <p className="text-[10px] text-emerald-800 leading-relaxed font-medium">
-          <strong>Step 1:</strong> You submit this request for the specific vegetables and quantities you need.
-          <strong> Step 2:</strong> The Admin reviews your request.
-          <strong> Step 3:</strong> The Admin checks warehouse Stocks.
-          <strong> Step 4:</strong> The Admin fulfills your request from stock!
-        </p>
       </div>
 
       {cart.length === 0 ? (
@@ -387,7 +373,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 </span>
               ) : (
                 <>
-                  <span>Submit Purchase Request to Admin (Step 1) • ₱{totalAmount.toFixed(2)}</span>
+                  <span>Submit Purchase Request to Admin • ₱{totalAmount.toFixed(2)}</span>
                   <ArrowRight className="w-4 h-4 stroke-[2.5]" />
                 </>
               )}

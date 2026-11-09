@@ -42,6 +42,7 @@ import {
   Save,
   X,
   ChevronRight,
+  ChevronDown,
   Printer,
   Calendar,
   Receipt,
@@ -60,6 +61,7 @@ import {
 } from 'lucide-react';
 import { UserProfile, ProduceItem, Order, TransportJob, DirectMessage, DAPriceItem, DABulletinMeta } from '../types';
 import { appSync } from '../utils/appSync';
+import { ThemeToggleButton } from './ThemeToggleButton';
 import { DA_DAILY_PRICES, DA_BULLETIN_METADATA, findMatchingDAPrice } from '../data/daPricesData';
 import { generateVeggieConnect3Sql } from '../data/xamppSqlData';
 import { APIProvider, Map, AdvancedMarker, useMap } from '@vis.gl/react-google-maps';
@@ -121,6 +123,7 @@ interface AdminAppProps {
   onUpdateUser: (user: UserProfile) => void;
   onDeleteUser: (userId: string) => void;
   onUpdateProduce: (produce: ProduceItem) => void;
+  onVisualUpdateProduce?: (produce: ProduceItem) => void;
   onDeleteProduce: (produceId: string) => void;
   onBuyFarmerProduct?: (farmerProduce: ProduceItem, boughtQuantity: number, resalePrice?: number) => void;
   onPutInSupermarketStock?: (productData: any) => void;
@@ -189,6 +192,9 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     adminPath === 'sql' ? 'database' : 'overview'
   );
 
+  // Overview: the DA price guide preview stays minimized until opened.
+  const [isOverviewPricesOpen, setIsOverviewPricesOpen] = useState(false);
+
   // Cancellation Modal for Admin
   const [adminOrderToCancel, setAdminOrderToCancel] = useState<Order | null>(null);
   const [adminCancelReasonInput, setAdminCancelReasonInput] = useState<string>('');
@@ -215,6 +221,11 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
   const [transactionSubTab, setTransactionSubTab] = useState<'store_pickups' | 'live_logistics' | 'all_orders'>('store_pickups');
 
+  // Buyer Requests sub-filter (Orders Menu): splits the buyer request list into
+  // Active (still being processed) vs Completed (picked up & paid) vs Cancelled
+  // so the Admin can check orders without mixing finished ones into the queue.
+  const [buyerRequestsFilter, setBuyerRequestsFilter] = useState<'active' | 'completed' | 'cancelled'>('active');
+
   const knownOrderIdsRef = React.useRef<Set<string>>(new Set(orders.map((o) => o.id)));
 
   // Count of active/pending buyer store pickup orders
@@ -226,6 +237,21 @@ export const AdminApp: React.FC<AdminAppProps> = ({
         o.status !== 'completed' &&
         o.status !== 'cancelled'
     ).length;
+  }, [orders]);
+
+  // Counts feeding the Active / Completed / Cancelled pills in Buyer Requests
+  const buyerRequestCounts = useMemo(() => {
+    const buyerOrders = orders.filter(
+      (o) =>
+        o.buyerId !== 'admin-main' &&
+        !o.id.startsWith('TX-ADM-') &&
+        !o.buyerName?.toLowerCase().includes('admin')
+    );
+    return {
+      active: buyerOrders.filter((o) => o.status !== 'completed' && o.status !== 'cancelled').length,
+      completed: buyerOrders.filter((o) => o.status === 'completed').length,
+      cancelled: buyerOrders.filter((o) => o.status === 'cancelled').length,
+    };
   }, [orders]);
 
   // Toast notification when new buyer store pickup orders arrive
@@ -580,7 +606,6 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   useEffect(() => {
     if (supermarketDirty) return;
     setSupermarket(resolveLiveTransactionAdminLocation(registeredUsers, adminProfile));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminProfile, registeredUsers, adminLocationSyncTick]);
 
   const [isLocating, setIsLocating] = useState(false);
@@ -816,9 +841,10 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     const verifiedUsers = nonAdminUsers.filter((u) => u.verified);
     const suspendedUsers = nonAdminUsers.filter((u) => u.status === 'suspended');
 
-    const validOrders = orders.filter((o) => o.status !== 'cancelled');
-    const totalOrderValue = validOrders.reduce((sum, o) => sum + (Number(o?.totalAmount ?? o?.subtotal) || 0), 0);
+    // Total Sales counts ONLY successful (completed) orders —
+    // cancelled and still-in-progress orders never count as sales.
     const completedOrders = orders.filter((o) => o.status === 'completed');
+    const totalOrderValue = completedOrders.reduce((sum, o) => sum + (Number(o?.totalAmount ?? o?.subtotal) || 0), 0);
     const activeTransportJobs = transportJobs.filter(
       (j) => j.status !== 'delivered' && !isJobOrOrderCancelled(j)
     );
@@ -1482,6 +1508,19 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     });
   }, [ownedBoughtProducts, lotReadyPoolById, stocksSearch, stocksFilter]);
 
+  // A crop belongs in the Central Warehouse ONLY if the supermarket actually
+  // owns it (admin bought it from the farmer and stocked it). A farmer's
+  // listing that has not been purchased by the admin must never appear here.
+  const isSupermarketOwnedStock = (p?: ProduceItem | null): boolean =>
+    Boolean(
+      p &&
+        (p.sellerStoreName === 'VeggieConnect Supermarket' ||
+          p.sellerStatus === 'bought_and_stocked' ||
+          p.farmName === 'VeggieConnect Supermarket' ||
+          p.farmerName === 'VeggieConnect Central Produce Hub' ||
+          (typeof p.id === 'string' && p.id.startsWith('sm-')))
+    );
+
   // Central Warehouse Stocks Inventory (Aggregated per vegetable)
   const warehouseInventory = useMemo(() => {
     const records: Record<string, {
@@ -1497,6 +1536,9 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     }> = {};
 
     produceList.forEach((prod) => {
+      // Skip farmer listings the admin has not bought yet — only
+      // supermarket-owned stock lives in the central warehouse.
+      if (!isSupermarketOwnedStock(prod)) return;
       const cropKey = `$${normalizeCropName(prod.name)}`;
       if (cropKey === '$') return;
 
@@ -1591,7 +1633,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     return found ? found.stockQuantity : 0;
   };
 
-  // Step 3 helper: Jump to Stocks menu and search for requested vegetable
+  // Helper: Jump to Stocks menu and search for requested vegetable
   const handleLocateInStocks = (cropName: string) => {
     setStocksSearch(cropName);
     setStocksFilter('all');
@@ -1784,56 +1826,73 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   // Central Warehouse Stocks Management Actions
-  const handleAdjustWarehouseStock = (item: { name: string; unit: string; stockQuantity: number; linkedProduceIds: string[] }, delta: number) => {
-    const newQty = Math.max(0, item.stockQuantity + delta);
-    // Find matching produce item to update in state & backend
-    const targetProduce = produceList.find((p) => item.linkedProduceIds.includes(p.id) || isMatchingCrop(p.name, item.name));
-    if (targetProduce) {
-      const updated: ProduceItem = {
-        ...targetProduce,
-        stockQuantity: newQty,
-      };
-      onUpdateProduce(updated);
-      appSync.publish('PRODUCE_UPDATED', updated, 'admin');
-      fetch(`/api/products/${targetProduce.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stockQuantity: newQty }),
-      }).catch(() => null);
-    }
-    showToast(`✓ Updated ${item.name} warehouse stock to ${newQty} ${item.unit}s.`);
+  // Admin Fulfill Buyer Purchase Request Action
+  //
+  // Stock rules:
+  //  • Buyer REQUEST lots carry placeholder ids ("req-prod-*") — their items
+  //    are deducted from the WAREHOUSE (the supermarket-owned records shown
+  //    in the Stocks menu) inside App.handleUpdateOrderStatus the moment the
+  //    order leaves 'pending' into any active status, with the backend
+  //    performing the authoritative deduction server-side. This handler only
+  //    PRE-CHECKS stock and triggers the status change — it must NOT deduct
+  //    here, or the central deduction would apply twice.
+  //  • Direct basket orders carry real produce ids and were ALREADY deducted
+  //    from the warehouse when POST /api/orders created them, so fulfilling
+  //    them must never deduct a second time.
+  //  • Matching always prefers warehouse-owned records (same ownership rules
+  //    as the Stocks menu) and picks the one with the highest stock — that is
+  //    the quantity the Stocks menu displays, so the visible number always
+  //    drops. A farmer's listing with a similar crop name is never deducted.
+  const isRequestLotItem = (produceId: any) =>
+    !produceId || String(produceId).startsWith('req-prod-');
+
+  const isWarehouseOwnedRecord = (p: ProduceItem) =>
+    p.sellerStoreName === 'VeggieConnect Supermarket' ||
+    p.sellerStatus === 'bought_and_stocked' ||
+    p.farmName === 'VeggieConnect Supermarket' ||
+    p.farmerName === 'VeggieConnect Central Produce Hub' ||
+    p.farmerId === 'admin-main' ||
+    (typeof p.id === 'string' && p.id.startsWith('sm-'));
+
+  const findWarehouseTarget = (item: { produceId?: string; produceName?: string }) => {
+    const requestedName = String(item.produceName || '').trim().toLowerCase();
+    const warehouseMatches = produceList
+      .filter((p) => isWarehouseOwnedRecord(p) && isMatchingCrop(p.name, item.produceName))
+      .sort((a, b) => (Number(b.stockQuantity) || 0) - (Number(a.stockQuantity) || 0));
+    if (warehouseMatches.length > 0) return warehouseMatches[0];
+    return (
+      produceList.find((p) => (p.name || '').trim().toLowerCase() === requestedName) ||
+      produceList.find((p) => isMatchingCrop(p.name, item.produceName))
+    );
   };
 
-  // Step 4: Admin Fulfill Buyer Purchase Request Action
   const handleFulfillBuyerRequest = (order: Order) => {
-    // 1. Deduct requested quantities from warehouse inventory
+    // Stock pre-check: every REQUEST lot item must still fit within
+    // warehouse stock before fulfillment (the server deducts & guards too).
+    const problems: string[] = [];
     order.items?.forEach((item) => {
-      const target = produceList.find(
-        (p) =>
-          (item.produceId && p.id === item.produceId) ||
-          isMatchingCrop(p.name, item.produceName)
-      );
+      if (!isRequestLotItem(item.produceId)) return;
+      const target = findWarehouseTarget(item);
       if (target) {
-        const newQty = Math.max(0, (target.stockQuantity || 0) - (item.quantity || 1));
-        const updatedItem: ProduceItem = {
-          ...target,
-          stockQuantity: newQty,
-        };
-        onUpdateProduce(updatedItem);
-        appSync.publish('PRODUCE_UPDATED', updatedItem, 'admin');
-        fetch(`/api/products/${target.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stockQuantity: newQty }),
-        }).catch(() => null);
+        const available = target.stockQuantity || 0;
+        const needed = item.quantity || 1;
+        if (needed > available) {
+          problems.push(`${item.produceName}: needs ${needed}${item.unit || 'kg'}, only ${available}${target.unit || 'kg'} left`);
+        }
       }
     });
+    if (problems.length > 0) {
+      showToast(`⚠️ Cannot fulfill #${order.id} — ${problems.join(' • ')}. Restock the warehouse or decline this request.`);
+      return;
+    }
 
-    // 2. Mark order status as confirmed (Step 4: Fulfilled - ready for depot pickup or delivery)
+    // Mark order status as confirmed (Fulfilled - ready for depot pickup or
+    // delivery). App.handleUpdateOrderStatus performs the single request-lot
+    // warehouse deduction for this transition (visual + server authoritative).
     if (onUpdateOrderStatus) {
       onUpdateOrderStatus(order.id, 'confirmed');
     }
-    showToast(`✅ Fulfilled Buyer Request #${order.id}! Warehouse stocks deducted & Buyer notified (Step 4 Complete).`);
+    showToast(`✅ Fulfilled Buyer Request #${order.id}! Warehouse stocks deducted & Buyer notified.`);
   };
 
   const handleDeleteBoughtStock = (stock: any) => {
@@ -1923,7 +1982,11 @@ export const AdminApp: React.FC<AdminAppProps> = ({
         <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-white text-neutral-900 flex flex-col">
           {!isAdminAuthenticated ? (
             /* ADMIN LOGIN SCREEN */
-            <div className="flex-1 p-4 flex flex-col justify-center space-y-4">
+            <div className="relative flex-1 p-4 flex flex-col justify-center space-y-4">
+              {/* Per-role dark mode toggle (guest scope until the admin signs in) */}
+              <div className="absolute top-3 right-3 z-20">
+                <ThemeToggleButton id="btn-admin-theme-toggle" />
+              </div>
               <div className="text-center space-y-2 pt-4">
                 <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-700 to-teal-600 text-white flex items-center justify-center mx-auto shadow-md">
                   <Shield className="w-8 h-8" />
@@ -2017,6 +2080,8 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1.5">
+                    {/* Per-role dark mode toggle — saved separately for the admin account */}
+                    <ThemeToggleButton id="btn-theme-toggle" tone="dark" className="!w-9 !h-9" />
                     <button
                       onClick={() => setAdminTab('database')}
                       className="p-2 rounded-xl bg-white/15 hover:bg-white/25 text-white transition-all cursor-pointer"
@@ -2062,7 +2127,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                     <div className="bg-purple-50/70 border border-purple-200 rounded-2xl p-3 text-center space-y-0.5">
                       <span className="text-[10px] text-purple-800 uppercase font-bold">Total Sales (Orders)</span>
                       <p className="text-xl font-extrabold text-purple-950 font-display">₱{stats.totalOrderValue.toLocaleString()}</p>
-                      <span className="text-[9px] text-purple-600 font-medium">{stats.totalOrders} total orders placed</span>
+                      <span className="text-[9px] text-purple-600 font-medium">From {stats.completedOrders} completed orders</span>
                     </div>
                   </div>
 
@@ -2098,37 +2163,51 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                     )}
                   </div>
 
-                  {/* Daily DA Bantay Presyo (SRP) Summary */}
-                  <div className="bg-white border border-neutral-200 rounded-3xl p-4 space-y-2.5 shadow-xs">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wider">
-                          DA Market Price Guide (Official Suggested SRP)
-                        </h3>
-                        <p className="text-[10px] text-neutral-500">Government price benchmark for Dumaguete markets</p>
-                      </div>
-                      <button
-                        onClick={() => setAdminTab('prices')}
-                        className="text-[10px] text-emerald-700 font-bold bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200 cursor-pointer flex items-center gap-1"
-                      >
-                        <span>View All ({DA_DAILY_PRICES.length})</span>
-                        <ChevronRight className="w-3 h-3" />
-                      </button>
-                    </div>
-                    <div className="space-y-1.5 max-h-56 overflow-y-auto scrollbar-none divide-y divide-neutral-100">
-                      {DA_DAILY_PRICES.slice(0, 6).map((da) => (
-                        <div key={da.commodity} className="pt-1.5 first:pt-0 flex items-center justify-between text-xs">
-                          <div>
-                            <p className="font-bold text-neutral-900">{da.commodity}</p>
-                            <p className="text-[10px] text-neutral-500">{da.category}</p>
-                          </div>
-                          <div className="text-right">
-                            <p className="font-extrabold text-emerald-700">₱{da.prevailingRetailPrice}/kg</p>
-                            <p className="text-[10px] text-neutral-400">₱{da.priceRangeMin}-{da.priceRangeMax}</p>
-                          </div>
+                  {/* Daily DA Bantay Presyo (SRP) Summary — collapsed by default */}
+                  <div className="bg-white border border-neutral-200 rounded-3xl shadow-xs overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setIsOverviewPricesOpen(!isOverviewPricesOpen)}
+                      className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left cursor-pointer hover:bg-neutral-50 transition-colors"
+                      aria-expanded={isOverviewPricesOpen}
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-xs font-bold text-neutral-900 uppercase tracking-wider">
+                          DA Market Price Guide
+                        </span>
+                        <span className="block text-[10px] text-neutral-500 truncate">
+                          Government SRP benchmark • {DA_DAILY_PRICES.length} commodities
+                        </span>
+                      </span>
+                      <ChevronDown
+                        className={`w-4 h-4 text-emerald-700 flex-shrink-0 transition-transform ${isOverviewPricesOpen ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+                    {isOverviewPricesOpen && (
+                      <div className="px-4 pb-4 space-y-2.5">
+                        <button
+                          onClick={() => setAdminTab('prices')}
+                          className="text-[10px] text-emerald-700 font-bold bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200 cursor-pointer flex items-center gap-1"
+                        >
+                          <span>View All ({DA_DAILY_PRICES.length})</span>
+                          <ChevronRight className="w-3 h-3" />
+                        </button>
+                        <div className="space-y-1.5 max-h-56 overflow-y-auto scrollbar-none divide-y divide-neutral-100">
+                          {DA_DAILY_PRICES.slice(0, 6).map((da) => (
+                            <div key={da.commodity} className="pt-1.5 first:pt-0 flex items-center justify-between text-xs">
+                              <div>
+                                <p className="font-bold text-neutral-900">{da.commodity}</p>
+                                <p className="text-[10px] text-neutral-500">{da.category}</p>
+                              </div>
+                              <div className="text-right">
+                                <p className="font-extrabold text-emerald-700">₱{da.prevailingRetailPrice}/kg</p>
+                                <p className="text-[10px] text-neutral-400">₱{da.priceRangeMin}-{da.priceRangeMax}</p>
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -2621,7 +2700,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                           <Store className="w-10 h-10 text-emerald-600/50 mx-auto" />
                           <h4 className="font-bold text-xs text-neutral-900">No Produce Stocked in Supermarket Yet</h4>
                           <p className="text-[11px] text-neutral-500 max-w-xs mx-auto">
-                            Switch to <strong>Farmer Offers (Buy Desk)</strong> to procure harvest lots from registered farmers. Purchased crops will automatically appear here!
+                            Harvest lots procured from registered farmers in the <strong>Farmer Offers (Buy Desk)</strong> will appear here.
                           </p>
                           <button
                             onClick={() => setProduceSubTab('farmer_offers')}
@@ -2698,7 +2777,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                       </span>
                     </div>
                     <p className="text-[11px] text-emerald-100/90 leading-relaxed bg-emerald-950/40 p-2.5 rounded-xl border border-emerald-800/60">
-                      Step 3 Fulfillment Desk: Access this Stocks menu to check real-time warehouse inventory and locate requested vegetables before fulfilling Buyer Purchase Requests.
+                      Check real-time warehouse inventory and locate requested vegetables before fulfilling Buyer Purchase Requests.
                     </p>
 
                     {/* Quick Stats Grid */}
@@ -2722,7 +2801,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                     </div>
                   </div>
 
-                  {/* Search Bar (Step 3: Locate requested vegetables) */}
+                  {/* Search Bar: Locate requested vegetables */}
                   <div className="relative">
                     <Search className="w-4 h-4 text-neutral-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                     <input
@@ -2796,7 +2875,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                         {stocksSearch ? `No vegetables matching "${stocksSearch}" in warehouse stocks.` : "No Inventory Items Found"}
                       </h4>
                       <p className="text-[11px] text-neutral-500 max-w-xs mx-auto leading-relaxed">
-                        Procure harvest offers from registered farmers via the Crops Buy Desk. They will automatically be stored in your central warehouse inventory for buyer order fulfillment.
+                        Crops procured from registered farmers in the Crops Buy Desk are stored here as central warehouse inventory for buyer order fulfillment.
                       </p>
                       <button
                         onClick={() => setAdminTab("produce")}
@@ -2890,51 +2969,6 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                               </div>
                             </div>
 
-                            {/* Quick Inventory Level Adjust Controls */}
-                            <div className="flex items-center justify-between pt-1 border-t border-neutral-100 text-xs">
-                              <span className="text-[10px] text-neutral-500 font-bold uppercase">
-                                Adjust Physical Stock:
-                              </span>
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => handleAdjustWarehouseStock(item, -5)}
-                                  disabled={item.stockQuantity <= 0}
-                                  className="px-2 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200 disabled:opacity-40 text-neutral-700 font-mono text-[10px] font-bold cursor-pointer"
-                                  title="Deduct 5 kg"
-                                >
-                                  -5kg
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleAdjustWarehouseStock(item, -1)}
-                                  disabled={item.stockQuantity <= 0}
-                                  className="px-2 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200 disabled:opacity-40 text-neutral-700 font-mono text-[10px] font-bold cursor-pointer"
-                                  title="Deduct 1 kg"
-                                >
-                                  -1kg
-                                </button>
-                                <span className="px-2 font-mono font-bold text-neutral-900 text-xs">
-                                  {item.stockQuantity} {item.unit}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleAdjustWarehouseStock(item, 1)}
-                                  className="px-2 py-1 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-mono text-[10px] font-bold cursor-pointer"
-                                  title="Add 1 kg"
-                                >
-                                  +1kg
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleAdjustWarehouseStock(item, 5)}
-                                  className="px-2 py-1 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-mono text-[10px] font-bold cursor-pointer"
-                                  title="Add 5 kg"
-                                >
-                                  +5kg
-                                </button>
-                              </div>
-                            </div>
                           </div>
                         );
                       })}
@@ -3001,7 +3035,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                   {transactionSubTab === 'store_pickups' ? (
                     <div className="space-y-3">
                       {/* Sub-header info banner */}
-                      <div className="bg-emerald-50 border border-emerald-200/80 rounded-2xl p-3 space-y-1">
+                      <div className="bg-emerald-50 border border-emerald-200/80 rounded-2xl px-3 py-2.5">
                         <div className="flex items-center justify-between">
                           <h4 className="font-extrabold text-xs text-emerald-950 flex items-center gap-1.5">
                             <Store className="w-4 h-4 text-emerald-700" />
@@ -3013,18 +3047,58 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                             </span>
                           )}
                         </div>
-                        <p className="text-[11px] text-emerald-800">
-                          Confirm incoming buyer pickup orders or decline them with a reason. Buyers pay Over-the-Counter cash upon physical depot pickup.
-                        </p>
+                      </div>
+
+                      {/* Active / Completed / Cancelled sub-filter pills */}
+                      <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                        {([
+                          { key: 'active', label: 'Active', count: buyerRequestCounts.active },
+                          { key: 'completed', label: 'Completed', count: buyerRequestCounts.completed },
+                          { key: 'cancelled', label: 'Cancelled', count: buyerRequestCounts.cancelled },
+                        ] as const).map((pill) => (
+                          <button
+                            key={pill.key}
+                            id={`pill-buyer-requests-${pill.key}`}
+                            onClick={() => setBuyerRequestsFilter(pill.key)}
+                            className={`min-h-[40px] px-3.5 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 shrink-0 transition-all cursor-pointer ${
+                              buyerRequestsFilter === pill.key
+                                ? 'bg-emerald-700 text-white shadow-xs'
+                                : 'bg-white text-emerald-950 border border-emerald-200 hover:bg-emerald-50'
+                            }`}
+                          >
+                            <span>{pill.label}</span>
+                            <span
+                              className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
+                                buyerRequestsFilter === pill.key
+                                  ? 'bg-white/20 text-white'
+                                  : 'bg-emerald-100 text-emerald-800'
+                              }`}
+                            >
+                              {pill.count}
+                            </span>
+                          </button>
+                        ))}
                       </div>
 
                       {/* Store Pickup Orders List */}
                       {(() => {
-                        const buyerOrders = orders.filter(
+                        const allBuyerRequests = orders.filter(
                           (o) =>
                             o.buyerId !== 'admin-main' &&
                             !o.id.startsWith('TX-ADM-') &&
                             !o.buyerName?.toLowerCase().includes('admin')
+                        );
+
+                        // Active = request still moving through the workflow
+                        // (pending review, confirmed, checking stocks, fulfilled,
+                        // ready/picked up/in transit). Completed & Cancelled are
+                        // terminal states kept in their own tabs.
+                        const buyerOrders = allBuyerRequests.filter((o) =>
+                          buyerRequestsFilter === 'active'
+                            ? o.status !== 'completed' && o.status !== 'cancelled'
+                            : buyerRequestsFilter === 'completed'
+                            ? o.status === 'completed'
+                            : o.status === 'cancelled'
                         );
 
                         return (
@@ -3032,9 +3106,19 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                             {buyerOrders.length === 0 ? (
                               <div className="bg-white border border-neutral-200 rounded-3xl p-6 text-center text-xs text-neutral-500 space-y-2">
                                 <Store className="w-8 h-8 text-neutral-300 mx-auto stroke-[1.5]" />
-                                <p className="font-bold text-neutral-800 text-sm">No Store Pickup Orders Yet</p>
+                                <p className="font-bold text-neutral-800 text-sm">
+                                  {buyerRequestsFilter === 'active'
+                                    ? 'No Active Buyer Requests'
+                                    : buyerRequestsFilter === 'completed'
+                                    ? 'No Completed Buyer Requests Yet'
+                                    : 'No Cancelled Buyer Requests'}
+                                </p>
                                 <p className="text-[11px] text-neutral-400">
-                                  When buyers place orders in the supermarket app, their Store Depot Pickup transactions will pop up here for your confirmation or decline.
+                                  {buyerRequestsFilter === 'active'
+                                    ? 'New buyer requests placed in the Market will pop up here for your confirmation or decline.'
+                                    : buyerRequestsFilter === 'completed'
+                                    ? 'Buyer requests you mark as "Picked Up & Paid" move into this Completed tab.'
+                                    : 'Declined requests with their reasons are kept here for your records.'}
                                 </p>
                               </div>
                             ) : (
@@ -3126,14 +3210,14 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                                       </div>
                                     </div>
 
-                                    {/* Items List with Step 3 Inventory Checks */}
+                                    {/* Items List with Inventory Checks */}
                                     <div className="space-y-1.5">
                                       <div className="flex items-center justify-between">
                                         <span className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider block">
                                           Requested Vegetables ({order.items?.length || 0}):
                                         </span>
                                         <span className="text-[10px] font-bold text-emerald-800">
-                                          Step 3: Inventory Check
+                                          Inventory Check
                                         </span>
                                       </div>
                                       <div className="space-y-1.5">
@@ -3161,7 +3245,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                                                 </span>
                                               </div>
 
-                                              {/* Step 3: Stock Status & Quick Locate in Stocks Button */}
+                                              {/* Stock Status & Quick Locate in Stocks Button */}
                                               <div className="flex items-center justify-between text-[10px] pt-1 border-t border-neutral-100 flex-wrap gap-1">
                                                 <span
                                                   className={`font-bold px-2 py-0.5 rounded-md flex items-center gap-1 ${
@@ -3190,7 +3274,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                                                   title={`Locate ${item.produceName} in Stocks menu`}
                                                 >
                                                   <Search className="w-3 h-3" />
-                                                  <span>Locate in Stocks (Step 3) →</span>
+                                                  <span>Locate in Stocks →</span>
                                                 </button>
                                               </div>
                                             </div>
@@ -3227,7 +3311,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                                               title="Fulfill buyer request, deduct warehouse inventory, and notify buyer"
                                             >
                                               <PackageCheck className="w-4 h-4" />
-                                              <span>Fulfill Buyer Request (Step 4)</span>
+                                              <span>Fulfill Buyer Request</span>
                                             </button>
                                             <button
                                               type="button"
@@ -3612,7 +3696,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                                   </div>
                                 )}
 
-                                {/* Owner Interactive Step Execution Controls or Cancelled Summary */}
+                                {/* Owner Interactive Execution Controls or Cancelled Summary */}
                                 {isCancelled ? (
                                   <div className="bg-red-50 border border-red-200 rounded-2xl p-3 text-xs text-red-900 space-y-1.5">
                                     <div className="flex items-center justify-between font-bold">
@@ -4048,7 +4132,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                     </button>
                   </div>
 
-                  {/* Step-by-Step XAMPP phpMyAdmin Guide */}
+                  {/* XAMPP phpMyAdmin Guide */}
                   <div className="bg-emerald-50/70 border border-emerald-200 rounded-2xl p-3.5 space-y-2 text-xs">
                     <div className="flex items-center gap-1.5 font-bold text-emerald-950">
                       <Server className="w-4 h-4 text-emerald-700" />

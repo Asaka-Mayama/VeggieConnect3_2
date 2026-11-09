@@ -156,6 +156,8 @@ export interface Order {
   cancelReason?: string;
   cancelledAt?: string;
   cancelledBy?: string;
+  /** Exactly-once guard: request-lot warehouse stock already deducted for this order. */
+  requestStockDeducted?: boolean;
   createdAt?: string;
   transporterId?: string;
   transporterName?: string;

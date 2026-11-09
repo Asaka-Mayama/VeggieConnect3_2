@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Wifi, Battery, Signal, ShoppingBag, Store, Sprout, ClipboardList, MessageSquare, Truck, User } from 'lucide-react';
+import { Wifi, Battery, Signal, Store, Sprout, ClipboardList, MessageSquare, User } from 'lucide-react';
 import { UserRole } from '../types';
 
 interface MobileFrameProps {
@@ -18,7 +18,6 @@ export const MobileFrame: React.FC<MobileFrameProps> = ({
   activeTab,
   setActiveTab,
   userRole,
-  cartCount,
   ordersCount,
   unreadMessagesCount,
   isLoggedIn = true,
@@ -42,11 +41,13 @@ export const MobileFrame: React.FC<MobileFrameProps> = ({
   const isAdmin = userRole === 'admin';
 
   // Define tab navigation order for swipe gesture transitions
+  // NOTE: Buyers have NO Cart tab — the Market is request-only. Buyer requests
+  // are tracked in the Orders tab (Request Submitted → Fulfillment).
   const getTabsForRole = () => {
     if (userRole === 'farmer') {
       return ['farmer-portal', 'orders', 'messages', 'profile'];
     }
-    return ['market', 'cart', 'orders', 'messages', 'profile'];
+    return ['market', 'orders', 'messages', 'profile'];
   };
 
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -138,28 +139,6 @@ export const MobileFrame: React.FC<MobileFrameProps> = ({
                 >
                   <Store className="w-5 h-5 mb-0.5" />
                   <span className="text-[10px] tracking-tight">Market</span>
-                </button>
-              )}
-
-              {userRole === 'buyer' && (
-                <button
-                  id="nav-tab-cart"
-                  onClick={() => setActiveTab('cart')}
-                  className={`flex flex-col items-center justify-center min-h-[50px] min-w-[56px] py-1 px-2.5 rounded-2xl transition-all relative cursor-pointer active:scale-95 ${
-                    activeTab === 'cart'
-                      ? 'bg-emerald-100 text-emerald-900 font-bold shadow-xs'
-                      : 'text-neutral-500 hover:text-emerald-800 font-medium'
-                  }`}
-                >
-                  <div className="relative">
-                    <ShoppingBag className="w-5 h-5 mb-0.5" />
-                    {cartCount > 0 && (
-                      <span className="absolute -top-1.5 -right-2 bg-emerald-600 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center shadow-xs">
-                        {cartCount}
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-[10px] tracking-tight">Cart</span>
                 </button>
               )}
 

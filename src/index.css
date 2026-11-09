@@ -1,1 +1,235 @@
 @import "tailwindcss";
+
+/* ============================================================
+   VeggieConnect — Per-role Dark Mode
+   ------------------------------------------------------------
+   Applied by src/utils/themeStore.ts as `vc-dark` on <html>.
+   Each role (admin / farmer / buyer / transporter / guest)
+   stores its own preference, so toggling dark mode as one user
+   never affects the others.
+
+   Strategy:
+   1. Remap Tailwind 4 color TOKENS for light surfaces
+      (emerald-50..200, amber-50..200, red-50..100, neutral-50..200,
+      sky, rose, purple, teal, slate-100 ...) under html.vc-dark.
+      Every background, border, gradient-stop and ring utility
+      (including alpha variants) then picks up the dark value
+      automatically.
+   2. Tokens that must stay dark (banner gradients like
+      from-emerald-800, bg-neutral-900, solid buttons) are NOT
+      remapped: their TEXT utilities are re-lightened instead.
+   3. --color-white is never remapped (white text on buttons);
+      white SURFACE utilities are overridden individually.
+   ============================================================ */
+
+/* ---------- 1. Token remaps (light surfaces go dark) ---------- */
+html.vc-dark {
+  /* Neutral canvas & cards */
+  --color-neutral-50: #151f17;
+  --color-neutral-100: #1a251c;
+  --color-neutral-200: #232f26;
+
+  /* Emerald-tinted surfaces */
+  --color-emerald-50: #0f2418;
+  --color-emerald-100: #14301f;
+  --color-emerald-200: #1c4130;
+
+  /* Amber warning surfaces */
+  --color-amber-50: #271f0e;
+  --color-amber-100: #302612;
+  --color-amber-200: #403314;
+  --color-amber-300: #7a6624;
+  --color-amber-400: #a98e2c;
+
+  /* Red / Rose danger surfaces */
+  --color-red-50: #2a1515;
+  --color-red-100: #331b1b;
+  --color-rose-50: #2a141b;
+  --color-rose-100: #331a23;
+
+  /* Sky info surfaces */
+  --color-sky-50: #122230;
+  --color-sky-100: #1a2f3d;
+  --color-sky-200: #275268;
+
+  /* Purple / Teal / Slate / Blue accents */
+  --color-purple-50: #201a2b;
+  --color-purple-100: #292138;
+  --color-purple-200: #4a3a68;
+  --color-teal-50: #0f2320;
+  --color-slate-50: #151f17;
+  --color-slate-100: #1a251c;
+  --color-blue-50: #122230;
+  --color-blue-100: #1a2f3d;
+  --color-blue-200: #274a68;
+  --color-rose-200: #5c2a38;
+}
+
+/* ---------- 2. White surfaces (white itself stays for text) ---------- */
+html.vc-dark .bg-white { background-color: #111a13; }
+html.vc-dark .bg-white\/95 { background-color: rgba(17, 26, 19, 0.96); }
+html.vc-dark .bg-white\/90 { background-color: rgba(17, 26, 19, 0.94); }
+html.vc-dark .hover\:bg-white:hover { background-color: #1a251c; }
+html.vc-dark .focus\:bg-white:focus { background-color: #111a13; }
+html.vc-dark .bg-\[\#f4f9f4\] { background-color: #111a13; }
+html.vc-dark .bg-\[\#f4faf5\] { background-color: #111a13; }
+
+/* ---------- 3. Neutral text goes light (tokens 400+ stay for dark UI) ---------- */
+html.vc-dark .text-neutral-400 { color: #7e9184; }
+html.vc-dark .text-neutral-500 { color: #94a69a; }
+html.vc-dark .text-neutral-600 { color: #aabcaf; }
+html.vc-dark .text-neutral-700 { color: #c3d3c8; }
+html.vc-dark .text-neutral-800 { color: #dae6dd; }
+html.vc-dark .text-neutral-900 { color: #edf4ee; }
+html.vc-dark .text-slate-400 { color: #7e9184; }
+html.vc-dark .text-slate-500 { color: #94a69a; }
+html.vc-dark .text-slate-900 { color: #edf4ee; }
+html.vc-dark .placeholder-neutral-400::placeholder { color: #5e7165; }
+
+/* ---------- 4. Emerald brand text (tokens stay dark for banners) ---------- */
+html.vc-dark .text-emerald-950 { color: #c9f0da; }
+html.vc-dark .text-emerald-900 { color: #a9e8c4; }
+html.vc-dark .text-emerald-800 { color: #96e0b6; }
+html.vc-dark .text-emerald-800\/80 { color: rgba(150, 224, 182, 0.8); }
+html.vc-dark .text-emerald-700 { color: #82d9ab; }
+html.vc-dark .text-emerald-600 { color: #5bcf95; }
+html.vc-dark .text-emerald-600\/70 { color: rgba(91, 207, 149, 0.7); }
+/* Light emerald tokens were remapped for surfaces — restore them as text */
+html.vc-dark .text-emerald-50 { color: #d2f5e2; }
+html.vc-dark .text-emerald-100 { color: #b9ecd0; }
+html.vc-dark .text-emerald-200 { color: #a9e8c4; }
+html.vc-dark .placeholder-emerald-800\/40::placeholder { color: rgba(150, 224, 182, 0.3); }
+/* Emerald-300/400 tokens stay light (used as text on dark banners),
+   but their BORDER utilities need dark values */
+html.vc-dark .border-emerald-300 { border-color: #2f6348; }
+html.vc-dark .border-emerald-300\/80 { border-color: rgba(47, 99, 72, 0.8); }
+html.vc-dark .border-emerald-400\/30 { border-color: rgba(47, 99, 72, 0.45); }
+html.vc-dark .border-emerald-400\/20 { border-color: rgba(47, 99, 72, 0.32); }
+html.vc-dark .bg-neutral-300 { background-color: #26332a; }
+html.vc-dark .bg-neutral-400 { background-color: #33423a; }
+html.vc-dark .border-neutral-300 { border-color: #33423a; }
+
+/* ---------- 5. Status colors (amber / red / rose / sky / blue text) ---------- */
+html.vc-dark .text-amber-950 { color: #f6dd93; }
+html.vc-dark .text-amber-900 { color: #f1d682; }
+html.vc-dark .text-amber-800 { color: #ecce6b; }
+html.vc-dark .text-amber-700 { color: #e7c654; }
+html.vc-dark .text-amber-600 { color: #fbd23b; }
+html.vc-dark .text-red-900 { color: #f2a5a5; }
+html.vc-dark .text-red-800 { color: #f09898; }
+html.vc-dark .text-red-700 { color: #ee8585; }
+html.vc-dark .text-red-600 { color: #f57f7f; }
+html.vc-dark .text-rose-800 { color: #f3a1b3; }
+html.vc-dark .text-rose-700 { color: #f18ba1; }
+html.vc-dark .text-rose-600 { color: #f0849b; }
+html.vc-dark .text-sky-950 { color: #b7e4f8; }
+html.vc-dark .text-sky-800 { color: #93d4f2; }
+html.vc-dark .text-sky-700 { color: #7fcbed; }
+html.vc-dark .text-sky-600 { color: #6fc5ea; }
+html.vc-dark .text-blue-900 { color: #adc9f2; }
+
+/* ---------- 5c. Remaining accent text (tokens kept dark for banners) ---------- */
+html.vc-dark .text-amber-100 { color: #fbe8a6; }
+html.vc-dark .text-amber-300 { color: #f5d47a; }
+html.vc-dark .text-amber-400 { color: #fbbf24; }
+html.vc-dark .text-blue-600 { color: #7cb3f5; }
+html.vc-dark .text-blue-700 { color: #8fbcf7; }
+html.vc-dark .text-neutral-100 { color: #e8f0ea; }
+html.vc-dark .text-neutral-950 { color: #f4faf5; }
+html.vc-dark .text-purple-600 { color: #c99df2; }
+html.vc-dark .text-purple-700 { color: #c08cee; }
+html.vc-dark .text-purple-800 { color: #b47fe9; }
+html.vc-dark .text-purple-950 { color: #ddb6fa; }
+html.vc-dark .text-rose-900 { color: #f6b3c3; }
+html.vc-dark .text-rose-950 { color: #f8c1cd; }
+html.vc-dark .text-sky-900 { color: #a5d8f2; }
+html.vc-dark .text-slate-600 { color: #a9bbad; }
+html.vc-dark .text-slate-700 { color: #c3d3c8; }
+html.vc-dark .text-slate-950 { color: #f4faf5; }
+html.vc-dark .text-teal-700 { color: #63d8c4; }
+
+/* ---------- 6. Border tokens that cannot be remapped ---------- */
+html.vc-dark .border-slate-200\/80 { border-color: rgba(38, 51, 42, 0.8); }
+html.vc-dark .border-slate-200 { border-color: #26332a; }
+html.vc-dark .border-slate-100 { border-color: #1e2a21; }
+html.vc-dark .border-amber-500 { border-color: #93742a; }
+html.vc-dark .border-blue-300 { border-color: #35608c; }
+html.vc-dark .border-emerald-400 { border-color: #2f6348; }
+html.vc-dark .border-red-300 { border-color: #6b2f2f; }
+html.vc-dark .border-rose-300 { border-color: #5c2a38; }
+html.vc-dark .border-rose-400 { border-color: #6b3143; }
+html.vc-dark .border-sky-300 { border-color: #2f6380; }
+
+/* ---------- 7. Hover / focus text states ---------- */
+html.vc-dark .hover\:text-neutral-600:hover { color: #aabcaf; }
+html.vc-dark .hover\:text-neutral-700:hover { color: #c3d3c8; }
+html.vc-dark .hover\:text-neutral-800:hover { color: #dae6dd; }
+html.vc-dark .hover\:text-neutral-900:hover { color: #edf4ee; }
+html.vc-dark .hover\:text-emerald-600:hover { color: #5bcf95; }
+html.vc-dark .hover\:text-emerald-700:hover { color: #82d9ab; }
+html.vc-dark .hover\:text-emerald-800:hover { color: #96e0b6; }
+html.vc-dark .hover\:text-emerald-900:hover { color: #a9e8c4; }
+html.vc-dark .hover\:text-emerald-950:hover { color: #c9f0da; }
+html.vc-dark .hover\:text-amber-800:hover { color: #ecce6b; }
+html.vc-dark .hover\:text-red-600:hover { color: #f57f7f; }
+html.vc-dark .hover\:text-red-800:hover { color: #f09898; }
+html.vc-dark .hover\:text-rose-600:hover { color: #f0849b; }
+html.vc-dark .hover\:text-rose-700:hover { color: #f18ba1; }
+html.vc-dark .hover\:border-neutral-300:hover { border-color: #40514a; }
+html.vc-dark .hover\:border-emerald-300:hover { border-color: #3a7a58; }
+
+
+/* ---------- 5b. Alpha-variant text colors ---------- */
+html.vc-dark .text-emerald-600\/50 { color: rgba(91, 207, 149, 0.5); }
+html.vc-dark .text-emerald-600\/70 { color: rgba(91, 207, 149, 0.7); }
+html.vc-dark .text-emerald-700\/60 { color: rgba(130, 217, 171, 0.6); }
+html.vc-dark .text-emerald-700\/80 { color: rgba(130, 217, 171, 0.8); }
+html.vc-dark .text-emerald-800\/70 { color: rgba(150, 224, 182, 0.7); }
+html.vc-dark .text-emerald-800\/80 { color: rgba(150, 224, 182, 0.8); }
+html.vc-dark .text-emerald-800\/90 { color: rgba(150, 224, 182, 0.9); }
+html.vc-dark .text-emerald-900\/70 { color: rgba(169, 232, 196, 0.75); }
+html.vc-dark .text-emerald-950\/70 { color: rgba(201, 240, 218, 0.75); }
+html.vc-dark .text-emerald-100\/90 { color: rgba(185, 236, 208, 0.9); }
+html.vc-dark .text-emerald-100\/95 { color: rgba(185, 236, 208, 0.95); }
+html.vc-dark .text-emerald-200\/80 { color: rgba(169, 232, 196, 0.8); }
+html.vc-dark .text-emerald-200\/90 { color: rgba(169, 232, 196, 0.9); }
+html.vc-dark .text-emerald-300\/90 { color: rgba(143, 224, 178, 0.9); }
+html.vc-dark .text-sky-800\/70 { color: rgba(147, 212, 242, 0.7); }
+html.vc-dark .text-amber-800\/70 { color: rgba(236, 206, 107, 0.7); }
+
+/* ---------- 8. Native scrollbars / form controls ---------- */
+html.vc-dark { scrollbar-color: #33423a #0e1510; }
+
+/* ============================================================
+   Theme toggle button (per-role dark mode switch)
+   ============================================================ */
+.vc-theme-btn {
+  width: 2rem;
+  height: 2rem;
+  min-width: 2rem;
+  min-height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  background-color: rgba(236, 253, 245, 0.9);
+  color: #047857;
+}
+.vc-theme-btn:hover { background-color: #d1fae5; }
+.vc-theme-btn:active { transform: scale(0.92); }
+.vc-theme-btn-dark {
+  background-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+}
+.vc-theme-btn-dark:hover { background-color: rgba(255, 255, 255, 0.25); }
+html.vc-dark .vc-theme-btn-light {
+  background-color: rgba(6, 39, 26, 0.75);
+  border-color: rgba(52, 211, 153, 0.4);
+  color: #6ee7b7;
+}
+html.vc-dark .vc-theme-btn-light:hover { background-color: rgba(6, 78, 59, 0.85); }

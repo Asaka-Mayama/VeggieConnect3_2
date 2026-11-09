@@ -18,10 +18,10 @@ export function generateVeggieConnect3Sql(
 -- Location: Dumaguete City, Negros Oriental, Philippines
 -- Currency: Philippine Peso (PHP / ₱)
 -- Buyer-Led Marketplace Workflow:
---   - Step 1 (Buyer Request): Buyer submits request detailing vegetables & quantities to Admin.
---   - Step 2 (Admin Processing): Admin receives and reviews the Buyer's purchase request.
---   - Step 3 (Admin Checks Inventory): Admin accesses Stocks menu to locate requested items.
---   - Step 4 (Fulfillment): If items are in stock, Admin fulfills the Buyer's request.
+--   - 1. Buyer Request: Buyer submits request detailing vegetables & quantities to Admin.
+--   - 2. Admin Processing: Admin receives and reviews the Buyer's purchase request.
+--   - 3. Admin Checks Inventory: Admin accesses Stocks menu to locate requested items.
+--   - 4. Fulfillment: If items are in stock, Admin fulfills the Buyer's request.
 --   - Farmer identities are strictly anonymous from the Buyer.
 --   - Admin no longer creates public product listings; Admin manages warehouse inventory.
 -- Generated on: ${timestamp}

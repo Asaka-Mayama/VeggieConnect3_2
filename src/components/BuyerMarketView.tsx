@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Search,
   SlidersHorizontal,
@@ -7,15 +7,12 @@ import {
   ArrowUpDown,
   FileText,
   Plus,
-  Minus,
   CheckCircle2,
   X,
   Store,
-  Clock,
-  ArrowRight,
-  ShieldCheck,
   Send,
-  Sparkles,
+  PackageCheck,
+  AlertTriangle,
 } from 'lucide-react';
 import { ProduceItem, HarvestStatus, Order, OrderItem, UserProfile } from '../types';
 import { ProduceCard } from './ProduceCard';
@@ -24,8 +21,9 @@ import { DA_DAILY_PRICES } from '../data/daPricesData';
 interface BuyerMarketViewProps {
   produceList: ProduceItem[];
   onSelectProduce: (produce: ProduceItem) => void;
-  onAddToCart: (produce: ProduceItem, e: React.MouseEvent) => void;
-  cartItemIds: Set<string>;
+  /** Legacy direct-purchase hook (market is request-only now). */
+  onAddToCart?: (produce: ProduceItem, e: React.MouseEvent) => void;
+  cartItemIds?: Set<string>;
   isBuyer?: boolean;
   currentUser?: UserProfile | null;
   onOrderPlaced?: (order: Order) => void;
@@ -34,8 +32,6 @@ interface BuyerMarketViewProps {
 export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
   produceList,
   onSelectProduce,
-  onAddToCart,
-  cartItemIds,
   isBuyer = true,
   currentUser,
   onOrderPlaced,
@@ -43,15 +39,15 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [onlyHarvestToday, setOnlyHarvestToday] = useState(false);
   const [maxDistance, setMaxDistance] = useState<number>(100);
-  const [sortBy, setSortBy] = useState<'freshness' | 'price_low' | 'distance'>('freshness');
+  const [sortBy, setSortBy] = useState<'stock_high' | 'freshness' | 'price_low' | 'distance'>('stock_high');
   const [showFilterDrawer, setShowFilterDrawer] = useState(false);
 
-  // Custom Buyer Purchase Request Modal state (Step 1)
+  // Custom Buyer Purchase Request Modal state.
+  // The request list ALWAYS starts EMPTY — the buyer chooses every crop
+  // themselves (preset dropdown, typed name, or a market card "Request" tap).
+  // No pre-added products, ever.
   const [showRequestModal, setShowRequestModal] = useState(false);
-  const [requestVegetables, setRequestVegetables] = useState<Array<{ name: string; quantity: number; unit: string; estimatedPrice: number }>>([
-    { name: 'Tomato (Kamatis)', quantity: 5, unit: 'kg', estimatedPrice: 55 },
-    { name: 'Cabbage (Repolyo)', quantity: 3, unit: 'kg', estimatedPrice: 75 },
-  ]);
+  const [requestVegetables, setRequestVegetables] = useState<Array<{ name: string; quantity: number; unit: string; estimatedPrice: number }>>([]);
   const [selectedPresetCrop, setSelectedPresetCrop] = useState('');
   const [customCropName, setCustomCropName] = useState('');
   const [customCropQty, setCustomCropQty] = useState(5);
@@ -60,6 +56,36 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
   const [buyerReqSlot, setBuyerReqSlot] = useState('Today at 3:00 PM (Store Depot Pickup)');
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
   const [requestSuccessMsg, setRequestSuccessMsg] = useState<string | null>(null);
+
+  // Product-specific request context: when the buyer taps "Request" on a market
+  // card (or inside the produce detail modal), the request modal opens pre-filled
+  // with THAT crop. availableStock caps the requested quantity.
+  const [requestProductInfo, setRequestProductInfo] = useState<{ name: string; availableStock: number; unit: string } | null>(null);
+
+  // ── Stock-aware request validation ─────────────────────────────────────
+  // Any requested item that matches a crop currently listed on the Market is
+  // capped at that crop's available shelf stock, so a buyer can never request
+  // more than the shelf can actually supply (overselling guard).
+  const [stockWarning, setStockWarning] = useState<string | null>(null);
+
+  const getAvailableStockFor = useCallback(
+    (name: string): { stock: number; unit: string } | null => {
+      const q = (name || '').trim().toLowerCase();
+      if (!q) return null;
+      const match =
+        produceList.find((p) => (p.name || '').trim().toLowerCase() === q) ||
+        produceList.find(
+          (p) =>
+            ((p.name || '').toLowerCase().includes(q) || q.includes((p.name || '').toLowerCase())) &&
+            (p.name || '').length > 0
+        );
+      if (!match) return null;
+      const stock =
+        typeof match.stockQuantity === 'number' ? match.stockQuantity : parseInt(String(match.stockQuantity), 10) || 0;
+      return { stock, unit: match.unit || 'kg' };
+    },
+    [produceList]
+  );
 
   // Preset popular vegetables list for quick selection
   const popularVegetables = [
@@ -114,21 +140,100 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
         if (sortBy === 'price_low') {
           return priceA - priceB;
         }
+        // Default: highest stock quantity first (freshest as tiebreaker)
+        const stockOf = (v: ProduceItem) =>
+          typeof v.stockQuantity === 'number' ? v.stockQuantity : parseInt(String(v.stockQuantity), 10) || 0;
+        const stockDiff = stockOf(b) - stockOf(a);
+        if (sortBy === 'stock_high') {
+          return stockDiff;
+        }
         const distA = typeof a.distanceKm === 'number' ? a.distanceKm : parseFloat(a.distanceKm as any) || 0;
         const distB = typeof b.distanceKm === 'number' ? b.distanceKm : parseFloat(b.distanceKm as any) || 0;
         if (sortBy === 'distance') {
           return distA - distB;
         }
-        // freshness default: Harvested Today first
+        // freshness default: Harvested Today first, then highest stock
         const score = (status?: HarvestStatus) => {
           if (status === 'Harvested Today') return 3;
           if (status === 'Fresh Picked on Order') return 2;
           if (status === 'Harvesting Tomorrow AM') return 1;
           return 0;
         };
-        return score(b.harvestStatus) - score(a.harvestStatus);
+        const freshnessDiff = score(b.harvestStatus) - score(a.harvestStatus);
+        if (freshnessDiff !== 0) {
+          return freshnessDiff;
+        }
+        return stockDiff;
       });
   }, [produceList, searchQuery, onlyHarvestToday, maxDistance, sortBy]);
+
+  // Open the request modal pre-filled with a specific market product.
+  // The buyer "requests" the crop — quantity is capped at the farmer's
+  // available stock and the estimated price is the live store price.
+  // `preferredQty` (optional) carries over the quantity picked in the
+  // produce detail modal's stepper.
+  const openRequestForProduct = useCallback((produce: ProduceItem, preferredQty?: number) => {
+    const stock =
+      typeof produce.stockQuantity === 'number'
+        ? produce.stockQuantity
+        : parseInt(String(produce.stockQuantity), 10) || 0;
+    const price =
+      typeof produce.pricePerUnit === 'number'
+        ? produce.pricePerUnit
+        : parseFloat(String(produce.pricePerUnit)) || 0;
+    const unit = produce.unit || 'kg';
+
+    const initialQty = Math.min(
+      Math.max(1, Math.floor(preferredQty || 5)),
+      Math.max(1, stock)
+    );
+
+    setRequestVegetables([
+      { name: produce.name, quantity: initialQty, unit, estimatedPrice: price },
+    ]);
+    setRequestProductInfo({ name: produce.name, availableStock: stock, unit });
+    setSelectedPresetCrop('');
+    setCustomCropName('');
+    setCustomCropQty(5);
+    setRequestSuccessMsg(null);
+    setStockWarning(null);
+    setShowRequestModal(true);
+  }, []);
+
+  // Generic "Request Crops" entry points (header button + empty-state button):
+  // open the modal with a CLEAN slate — empty item list, no pre-selected crop,
+  // no stale warnings — so the buyer builds the request from scratch.
+  const openGenericRequestModal = useCallback(() => {
+    setRequestVegetables([]);
+    setRequestProductInfo(null);
+    setSelectedPresetCrop('');
+    setCustomCropName('');
+    setCustomCropQty(5);
+    setRequestSuccessMsg(null);
+    setStockWarning(null);
+    setShowRequestModal(true);
+  }, []);
+
+  // Buyers can also trigger a product request from the produce detail modal
+  // (rendered at App level) via this app-wide event.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as (ProduceItem & { requestQty?: number }) | undefined;
+      if (detail) {
+        const { requestQty, ...produce } = detail;
+        openRequestForProduct(produce as ProduceItem, requestQty);
+      }
+    };
+    window.addEventListener('veggieconnect:request-product', handler);
+    return () => window.removeEventListener('veggieconnect:request-product', handler);
+  }, [openRequestForProduct]);
+
+  const closeRequestModal = () => {
+    setShowRequestModal(false);
+    setRequestProductInfo(null);
+    setRequestSuccessMsg(null);
+    setStockWarning(null);
+  };
 
   // Handle adding vegetable to the custom request
   const handleAddVegetableToRequest = () => {
@@ -144,17 +249,47 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
     );
     const estPrice = matchedPreset?.price || matchedDA?.prevailingRetailPrice || 60;
 
-    setRequestVegetables((prev) => {
-      const existing = prev.find((i) => i.name.toLowerCase() === nameToAdd.toLowerCase());
-      if (existing) {
-        return prev.map((i) =>
-          i.name.toLowerCase() === nameToAdd.toLowerCase()
-            ? { ...i, quantity: i.quantity + customCropQty }
-            : i
-        );
+    setStockWarning(null);
+
+    // Shelf-stock guard: matched listed crops cap at their available stock
+    const stockInfo = getAvailableStockFor(nameToAdd);
+    if (stockInfo && stockInfo.stock <= 0) {
+      setStockWarning(`${nameToAdd} is currently sold out — no shelf stock available to request.`);
+      return;
+    }
+
+    const existing = requestVegetables.find((i) => i.name.toLowerCase() === nameToAdd.toLowerCase());
+    let cappedNow = false;
+    let nextList: Array<{ name: string; quantity: number; unit: string; estimatedPrice: number }>;
+    if (existing) {
+      nextList = requestVegetables.map((i) => {
+        if (i.name.toLowerCase() !== nameToAdd.toLowerCase()) return i;
+        let nextQty = i.quantity + customCropQty;
+        // Cap product-specific requests at the farmer's available stock
+        if (requestProductInfo && i.name.toLowerCase() === requestProductInfo.name.toLowerCase()) {
+          nextQty = Math.min(nextQty, requestProductInfo.availableStock);
+        }
+        if (stockInfo && nextQty > stockInfo.stock) {
+          nextQty = stockInfo.stock;
+          cappedNow = true;
+        }
+        return { ...i, quantity: nextQty };
+      });
+    } else {
+      let addQty = customCropQty;
+      if (stockInfo && addQty > stockInfo.stock) {
+        addQty = stockInfo.stock;
+        cappedNow = true;
       }
-      return [...prev, { name: nameToAdd, quantity: customCropQty, unit: 'kg', estimatedPrice: estPrice }];
-    });
+      nextList = [...requestVegetables, { name: nameToAdd, quantity: addQty, unit: stockInfo?.unit || 'kg', estimatedPrice: estPrice }];
+    }
+    setRequestVegetables(nextList);
+
+    if (cappedNow && stockInfo) {
+      setStockWarning(
+        `Only ${stockInfo.stock} ${stockInfo.unit} of ${nameToAdd} available on the shelf — your quantity was capped.`
+      );
+    }
 
     setCustomCropName('');
     setSelectedPresetCrop('');
@@ -168,16 +303,47 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
   const handleUpdateReqQty = (index: number, newQty: number) => {
     if (newQty <= 0) {
       handleRemoveVegetableFromRequest(index);
+      setStockWarning(null);
       return;
     }
+    setStockWarning(null);
     setRequestVegetables((prev) =>
-      prev.map((item, idx) => (idx === index ? { ...item, quantity: newQty } : item))
+      prev.map((item, idx) => {
+        if (idx !== index) return item;
+        let clamped = newQty;
+        // Product-specific requests can never exceed the farmer's available stock
+        if (requestProductInfo && item.name.toLowerCase() === requestProductInfo.name.toLowerCase()) {
+          clamped = Math.min(clamped, requestProductInfo.availableStock);
+        }
+        // Market shelf guard: listed crops cap at available stock
+        const stockInfo = getAvailableStockFor(item.name);
+        if (stockInfo) {
+          clamped = Math.min(clamped, stockInfo.stock);
+        }
+        return { ...item, quantity: clamped };
+      })
     );
   };
 
-  // Submit Buyer Purchase Request to Admin (Step 1)
+  // Submit Buyer Purchase Request to Admin
   const handleSubmitBuyerRequest = () => {
     if (requestVegetables.length === 0) return;
+
+    // ── Final stock gate (safety net) ─────────────────────────────────
+    // Every item matching a listed market crop must be within its
+    // available shelf stock before the request can be submitted.
+    const problems: string[] = [];
+    for (const v of requestVegetables) {
+      const info = getAvailableStockFor(v.name);
+      if (info && v.quantity > info.stock) {
+        problems.push(`${v.name}: requested ${v.quantity}${v.unit}, only ${info.stock}${info.unit} available`);
+      }
+    }
+    if (problems.length > 0) {
+      setStockWarning(`Not enough shelf stock — ${problems.join(' • ')}. Please adjust the quantities.`);
+      return;
+    }
+    setStockWarning(null);
 
     const trimmedName = (buyerReqName || currentUser?.name || 'Valued Buyer').trim();
     const trimmedPhone = (buyerReqPhone || currentUser?.phone || '0917 000 0000').trim();
@@ -185,6 +351,7 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
 
     setIsSubmittingRequest(true);
 
+    const isProductRequest = Boolean(requestProductInfo);
     const orderItems: OrderItem[] = requestVegetables.map((v, i) => ({
       produceId: `req-prod-${Date.now()}-${i}`,
       produceName: v.name,
@@ -212,59 +379,48 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
       subtotal: totalAmt,
       deliveryFee: 0,
       totalAmount: totalAmt,
-      status: 'pending', // Step 1: Buyer request submitted, awaits Admin processing (Step 2)
+      status: 'pending', // Buyer request submitted, awaits Admin processing
       createdAt: new Date().toISOString(),
       farmerId: 'admin-main',
       farmName: 'VeggieConnect Central Market',
       paymentMethod: 'Over-the-Counter Cash at Depot',
-      notes: `Buyer Purchase Request (Buyer-Led Workflow): Details ${orderItems.length} specific vegetable lot(s) requested for Admin inventory verification and fulfillment.`,
+      notes: isProductRequest
+        ? `Product Request (Buyer-Led Workflow): Buyer requested "${requestProductInfo?.name}" from the Market catalog (${orderItems.length} vegetable lot(s)). Admin to source from the farmer's current harvest and fulfill.`
+        : `Buyer Purchase Request (Buyer-Led Workflow): Details ${orderItems.length} specific vegetable lot(s) requested for Admin inventory verification and fulfillment.`,
     };
 
     setTimeout(() => {
       setIsSubmittingRequest(false);
-      setRequestSuccessMsg(`Purchase Request #${newRequestOrder.id} submitted to Admin!`);
+      setRequestSuccessMsg(`Request #${newRequestOrder.id} submitted to Admin!`);
       if (onOrderPlaced) {
         onOrderPlaced(newRequestOrder);
       }
       setTimeout(() => {
-        setShowRequestModal(false);
-        setRequestSuccessMsg(null);
+        closeRequestModal();
       }, 1400);
     }, 500);
   };
 
   return (
     <div className="flex flex-col space-y-4 p-3.5 pb-8 w-full">
-      {/* Buyer-Led Workflow Explainer Banner & Primary Request Trigger */}
-      <div className="bg-gradient-to-r from-emerald-800 via-teal-800 to-emerald-900 text-white rounded-3xl p-4 shadow-sm space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-white/15 flex items-center justify-center text-emerald-200">
-              <FileText className="w-4.5 h-4.5" />
-            </div>
-            <div>
-              <h3 className="font-black text-sm text-white">Buyer-Led Vegetable Requests</h3>
-              <p className="text-[10px] text-emerald-200 font-medium">
-                Submit specific vegetables &amp; quantities directly to Admin
-              </p>
-            </div>
-          </div>
-          <span className="text-[9px] font-bold bg-emerald-700/80 text-emerald-200 px-2 py-0.5 rounded-full border border-emerald-600/60">
-            Step 1: Buyer Request
-          </span>
+      {/* Compact Market Header + Purchase Request trigger */}
+      <div className="flex items-center justify-between gap-2 pt-1">
+        <div className="min-w-0">
+          <h2 className="text-lg font-extrabold text-emerald-950 font-display leading-tight">
+            Today&apos;s Market
+          </h2>
+          <p className="text-[11px] text-neutral-500 font-medium truncate">
+            {produceList.length} crops available today
+          </p>
         </div>
-
-        <p className="text-[11px] text-emerald-100/90 leading-relaxed bg-emerald-950/40 p-2.5 rounded-2xl border border-emerald-800/60">
-          Need specific vegetables in bulk or exact quantities? Submit a purchase request directly to the Admin. The Admin reviews your request, verifies warehouse Stocks, and fulfills your order!
-        </p>
-
         <button
           id="btn-open-buyer-request-modal"
-          onClick={() => setShowRequestModal(true)}
-          className="w-full py-2.5 px-3 bg-white hover:bg-emerald-50 text-emerald-900 font-extrabold text-xs rounded-xl shadow-xs flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer"
+          onClick={openGenericRequestModal}
+          className="flex-shrink-0 min-h-[40px] px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] rounded-xl shadow-sm flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+          title="Submit a purchase request to the Admin"
         >
-          <FileText className="w-4 h-4 text-emerald-700" />
-          <span>Submit Vegetable Purchase Request (Step 1) →</span>
+          <FileText className="w-4 h-4" />
+          <span>Request Crops</span>
         </button>
       </div>
 
@@ -363,7 +519,7 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
             <ArrowUpDown className="w-3.5 h-3.5 text-emerald-600" />
             <span className="font-semibold text-[11px]">Sort:</span>
             <div className="flex gap-1.5">
-              {(['freshness', 'price_low', 'distance'] as const).map((s) => (
+              {(['stock_high', 'freshness', 'price_low', 'distance'] as const).map((s) => (
                 <button
                   key={s}
                   onClick={() => setSortBy(s)}
@@ -373,7 +529,7 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
                       : 'bg-emerald-50 text-emerald-800 border border-emerald-200/70 hover:bg-emerald-100'
                   }`}
                 >
-                  {s === 'freshness' ? 'Freshness' : s === 'price_low' ? 'Price: Low' : 'Distance'}
+                  {s === 'stock_high' ? 'Stock: High' : s === 'freshness' ? 'Freshness' : s === 'price_low' ? 'Price: Low' : 'Distance'}
                 </button>
               ))}
             </div>
@@ -401,8 +557,7 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
               key={produce.id}
               produce={produce}
               onSelect={onSelectProduce}
-              onAddToCart={onAddToCart}
-              isInCart={cartItemIds.has(produce.id)}
+              onRequestProduct={(prod) => openRequestForProduct(prod)}
               isBuyer={isBuyer}
             />
           ))}
@@ -412,21 +567,21 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
           <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto text-2xl">
             🥬
           </div>
-          <h3 className="text-base font-bold text-emerald-950 font-display">No Vegetables Currently Listed</h3>
+          <h3 className="text-base font-bold text-emerald-950 font-display">No Farmer Crops Available Right Now</h3>
           <p className="text-xs text-neutral-600 max-w-xs mx-auto leading-relaxed">
-            You don't have to wait! Submit your purchase request detailing the exact vegetables and quantities you need directly to the Admin.
+            No crops match your filters right now. You can still submit a request with the exact vegetables and quantities you need.
           </p>
           <button
-            onClick={() => setShowRequestModal(true)}
+            onClick={openGenericRequestModal}
             className="min-h-[44px] px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer shadow-xs inline-flex items-center gap-1.5"
           >
             <FileText className="w-4 h-4" />
-            <span>Submit Vegetable Purchase Request</span>
+            <span>Request a Vegetable</span>
           </button>
         </div>
       )}
 
-      {/* STEP 1: SUBMIT VEGETABLE PURCHASE REQUEST MODAL */}
+      {/* SUBMIT VEGETABLE PURCHASE REQUEST MODAL */}
       {showRequestModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150">
           <div className="bg-white rounded-3xl max-w-md w-full max-h-[92%] overflow-y-auto shadow-2xl border border-emerald-200 p-5 space-y-4 text-emerald-950">
@@ -441,33 +596,33 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
                     Vegetable Purchase Request
                   </h3>
                   <p className="text-[11px] text-emerald-700 font-semibold">
-                    Step 1: Detail Vegetables &amp; Quantities to Admin
+                    Detail Vegetables &amp; Quantities to Admin
                   </p>
                 </div>
               </div>
               <button
-                onClick={() => setShowRequestModal(false)}
+                onClick={closeRequestModal}
                 className="w-8 h-8 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-600 flex items-center justify-center cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Workflow steps indicator */}
-            <div className="grid grid-cols-4 gap-1 text-center text-[9px] font-bold">
-              <div className="bg-emerald-600 text-white py-1.5 rounded-lg">
-                1. Buyer Request ✓
+            {/* Product-specific request banner: shows when the buyer tapped
+                "Request" on a market crop. Quantity is capped at farmer stock. */}
+            {requestProductInfo && (
+              <div className="bg-emerald-600 text-white rounded-2xl p-3 flex items-center gap-2.5 shadow-xs">
+                <div className="w-8 h-8 rounded-xl bg-white/15 flex items-center justify-center flex-shrink-0">
+                  <PackageCheck className="w-4 h-4 text-emerald-100" />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="text-xs font-extrabold truncate">Requesting: {requestProductInfo.name}</h4>
+                  <p className="text-[10px] text-emerald-100 font-medium">
+                    {requestProductInfo.availableStock} {requestProductInfo.unit} available from today's farmer harvest — request quantity is capped at this amount.
+                  </p>
+                </div>
               </div>
-              <div className="bg-emerald-50 text-emerald-800 border border-emerald-200 py-1.5 rounded-lg">
-                2. Admin Processing
-              </div>
-              <div className="bg-neutral-100 text-neutral-500 py-1.5 rounded-lg">
-                3. Check Stocks
-              </div>
-              <div className="bg-neutral-100 text-neutral-500 py-1.5 rounded-lg">
-                4. Fulfillment
-              </div>
-            </div>
+            )}
 
             {/* Add Vegetables Form */}
             <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-2xl p-3.5 space-y-3">
@@ -560,6 +715,18 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
                         <p className="text-[10px] text-neutral-500">
                           ~₱{item.estimatedPrice}/{item.unit} • Est. Subtotal: ₱{(item.quantity * item.estimatedPrice).toFixed(2)}
                         </p>
+                        {(() => {
+                          const info = getAvailableStockFor(item.name);
+                          if (!info) {
+                            return <p className="text-[10px] text-neutral-400 italic">Custom request — Admin will source from farmers</p>;
+                          }
+                          const atCap = item.quantity >= info.stock;
+                          return (
+                            <p className={`text-[10px] font-bold ${atCap ? 'text-amber-600' : 'text-emerald-600'}`}>
+                              {info.stock} {info.unit} available on shelf{atCap ? ' • at maximum' : ''}
+                            </p>
+                          );
+                        })()}
                       </div>
 
                       <div className="flex items-center gap-2 flex-shrink-0">
@@ -577,7 +744,11 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
                           <button
                             type="button"
                             onClick={() => handleUpdateReqQty(idx, item.quantity + 1)}
-                            className="w-5 h-5 rounded bg-emerald-600 text-white font-bold flex items-center justify-center text-xs cursor-pointer shadow-2xs"
+                            disabled={(() => {
+                              const info = getAvailableStockFor(item.name);
+                              return info ? item.quantity >= info.stock : false;
+                            })()}
+                            className="w-5 h-5 rounded bg-emerald-600 text-white font-bold flex items-center justify-center text-xs cursor-pointer shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed"
                           >
                             +
                           </button>
@@ -596,6 +767,14 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Stock validation warning (overselling guard) */}
+            {stockWarning && (
+              <div className="bg-amber-50 border border-amber-300 rounded-2xl p-2.5 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <p className="text-[11px] font-bold text-amber-900 leading-relaxed">{stockWarning}</p>
+              </div>
+            )}
 
             {/* Buyer Contact & Pickup Information */}
             <div className="space-y-2 text-xs pt-1 border-t border-neutral-100">
@@ -673,7 +852,7 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
               ) : (
                 <>
                   <Send className="w-4 h-4" />
-                  <span>Submit Purchase Request to Admin (Step 1)</span>
+                  <span>Submit Purchase Request to Admin</span>
                 </>
               )}
             </button>

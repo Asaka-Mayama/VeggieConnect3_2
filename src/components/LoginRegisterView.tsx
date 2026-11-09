@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Sprout, ShoppingBag, Lock, Phone, Mail, MapPin, User, ArrowRight, CheckCircle2, AlertCircle, Shield } from 'lucide-react';
 import { UserRole, UserProfile } from '../types';
 import { resolveCoordinates } from '../utils/geoDistance';
+import { ThemeToggleButton } from './ThemeToggleButton';
 
 interface LoginRegisterViewProps {
   onLoginSuccess: (user: UserProfile) => void;
@@ -191,6 +192,13 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
       status: 'active',
     };
 
+    // The backend is the single source of truth for the account identity.
+    // Continue the session with the account the SERVER actually stored — its id
+    // is what every crop listing, order and chat will be linked to. Logging in
+    // with the locally generated object used to split one farmer into two ids
+    // (client id for crops, server id after re-login), which made their own
+    // crops invisible on their dashboard while still showing in the Market.
+    let registeredUser: UserProfile = newUser;
     try {
       const resp = await fetch('/api/auth/signup', {
         method: 'POST',
@@ -208,20 +216,17 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
         return;
       }
 
-      if (data.user) {
-        saveRegisteredUser(data.user);
-      } else {
-        saveRegisteredUser(newUser);
+      if (data.user && data.user.id) {
+        registeredUser = data.user;
       }
     } catch (err) {
       console.log('Backend signup notice:', err);
-      saveRegisteredUser(newUser);
     } finally {
       setIsSubmitting(false);
     }
 
-    saveRegisteredUser(newUser);
-    onLoginSuccess(newUser);
+    saveRegisteredUser(registeredUser);
+    onLoginSuccess(registeredUser);
   };
 
   function rawEmailSafe(str: string) {
@@ -232,6 +237,10 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
   if (activeTab === 'intro') {
     return (
       <div className="relative min-h-[580px] sm:min-h-[720px] flex-1 flex flex-col justify-between p-6 overflow-hidden text-white select-none bg-gradient-to-b from-emerald-700 via-emerald-800 to-emerald-950">
+        {/* Per-role dark mode toggle (guest scope before logging in) */}
+        <div className="absolute top-4 right-4 z-20">
+          <ThemeToggleButton id="btn-intro-theme-toggle" tone="dark" />
+        </div>
         {/* Decorative Ambient Green Lighting Effects */}
         <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
           <div className="absolute -top-20 -right-20 w-72 h-72 rounded-full bg-emerald-500/30 blur-3xl" />
@@ -304,7 +313,11 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
   }
 
   return (
-    <div className="min-h-full flex flex-col justify-center px-4 py-8 max-w-md mx-auto w-full text-neutral-900 bg-[#f4f9f4]">
+    <div className="relative min-h-full flex flex-col justify-center px-4 py-8 max-w-md mx-auto w-full text-neutral-900 bg-[#f4f9f4]">
+      {/* Per-role dark mode toggle (guest scope before logging in) */}
+      <div className="absolute top-3 right-3 z-20">
+        <ThemeToggleButton id="btn-auth-theme-toggle" />
+      </div>
       {/* Brand Header */}
       <div className="text-center mb-6">
         <div className="w-14 h-14 mx-auto rounded-2xl bg-emerald-600 flex items-center justify-center shadow-lg shadow-emerald-700/20 text-white mb-3">

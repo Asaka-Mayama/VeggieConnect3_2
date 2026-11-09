@@ -5,12 +5,10 @@ import {
   ShieldCheck,
   Plus,
   Minus,
-  Check,
   Store,
   Truck,
   MessageSquare,
-  Sprout,
-  Info
+  FileText
 } from 'lucide-react';
 import { ProduceItem, FarmerProfile, UserProfile } from '../types';
 import { getBuyerOriginLabel, isStockedToday } from './ProduceCard';
@@ -21,7 +19,8 @@ interface ProduceDetailModalProps {
   currentUser?: UserProfile | null;
   registeredUsers?: UserProfile[];
   onClose: () => void;
-  onAddToCart: (produce: ProduceItem, quantity: number) => void;
+  /** Legacy direct-purchase hook (unused in the request-only market). */
+  onAddToCart?: (produce: ProduceItem, quantity: number) => void;
   onDirectChat: (produce: ProduceItem) => void;
   onViewFarm: (farmerId: string) => void;
   isInCart?: boolean;
@@ -35,15 +34,22 @@ export const ProduceDetailModal: React.FC<ProduceDetailModalProps> = ({
   currentUser,
   registeredUsers = [],
   onClose,
-  onAddToCart,
   onDirectChat,
   onViewFarm,
-  isInCart = false,
   isBuyer = true,
   onEditProduce,
 }) => {
   const [quantity, setQuantity] = useState(1);
-  const [addedAnimation, setAddedAnimation] = useState(false);
+
+  // Buyer action: request THIS product. The request modal lives inside the
+  // Market view — dispatch an app-wide event that BuyerMarketView listens for
+  // (carrying the quantity chosen on the stepper), then close this modal.
+  const handleRequestProduct = () => {
+    window.dispatchEvent(
+      new CustomEvent('veggieconnect:request-product', { detail: { ...produce, requestQty: quantity } })
+    );
+    onClose();
+  };
 
   // Check if this produce belongs to current user
   const isOwnProduce = Boolean(
@@ -73,21 +79,17 @@ export const ProduceDetailModal: React.FC<ProduceDetailModalProps> = ({
     : rawPrice;
 
   const totalPrice = (effectivePrice * quantity).toFixed(2);
+  const stockAvailable =
+    typeof produce.stockQuantity === 'number'
+      ? produce.stockQuantity
+      : parseInt(String(produce.stockQuantity), 10) || 0;
+  const unit = produce.unit || 'kg';
 
   // Buyer anonymity: origin is province level only ("Negros Oriental") —
   // never farmer or farm names.
   const buyerOriginLabel = getBuyerOriginLabel();
   // "Harvested Today" shows only when the admin put the item on display today.
   const buyerShowHarvestedToday = isBuyer ? isStockedToday(produce) : true;
-
-  const handleAdd = () => {
-    onAddToCart(produce, quantity);
-    setAddedAnimation(true);
-    setTimeout(() => {
-      setAddedAnimation(false);
-      onClose();
-    }, 500);
-  };
 
   return (
     <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-xs flex flex-col justify-end sm:justify-center p-0 animate-in fade-in duration-200">
@@ -150,7 +152,12 @@ export const ProduceDetailModal: React.FC<ProduceDetailModalProps> = ({
               <div className="text-2xl font-black text-emerald-950">
                 ₱{rawPrice.toFixed(2)}
               </div>
-              <div className="text-xs text-neutral-500 font-medium">per kg</div>
+              <div className="text-xs text-neutral-500 font-medium">per {unit}</div>
+              {isBuyer && (
+                <div className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full mt-1">
+                  {stockAvailable} {unit} available
+                </div>
+              )}
             </div>
           </div>
 
@@ -245,55 +252,48 @@ export const ProduceDetailModal: React.FC<ProduceDetailModalProps> = ({
           </div>
         </div>
 
-        {/* Bottom Sticky Action Bar */}
+        {/* Bottom Sticky Action Bar — BUYERS REQUEST ONLY (no direct buying) */}
         {isBuyer ? (
-          <div className="p-4 bg-white border-t border-emerald-100 flex items-center justify-between gap-3 sticky bottom-0 shadow-lg">
-            {/* Quantity Stepper */}
-            <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-2xl p-1">
+          <div className="p-4 bg-white border-t border-emerald-100 sticky bottom-0 shadow-lg space-y-2.5">
+            <div className="flex items-center justify-between gap-3">
+              {/* Quantity Stepper (capped at farmer's available stock) */}
+              <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-2xl p-1">
+                <button
+                  id="btn-decrease-qty"
+                  onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                  disabled={quantity <= 1}
+                  className="w-10 h-10 rounded-xl bg-white hover:bg-emerald-100 disabled:opacity-40 text-emerald-950 font-bold flex items-center justify-center transition-colors cursor-pointer shadow-xs active:scale-95"
+                >
+                  <Minus className="w-4 h-4 stroke-[2.5]" />
+                </button>
+                <span className="w-8 text-center font-extrabold text-sm text-emerald-950">
+                  {quantity}
+                </span>
+                <button
+                  id="btn-increase-qty"
+                  onClick={() => setQuantity(Math.min(stockAvailable, quantity + 1))}
+                  disabled={quantity >= stockAvailable}
+                  className="w-10 h-10 rounded-xl bg-white hover:bg-emerald-100 disabled:opacity-40 text-emerald-950 font-bold flex items-center justify-center transition-colors cursor-pointer shadow-xs active:scale-95"
+                >
+                  <Plus className="w-4 h-4 stroke-[2.5]" />
+                </button>
+              </div>
+
+              {/* Request This Product Button */}
               <button
-                id="btn-decrease-qty"
-                onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                disabled={quantity <= 1}
-                className="w-10 h-10 rounded-xl bg-white hover:bg-emerald-100 disabled:opacity-40 text-emerald-950 font-bold flex items-center justify-center transition-colors cursor-pointer shadow-xs active:scale-95"
+                id="btn-request-this-product"
+                onClick={handleRequestProduct}
+                disabled={stockAvailable === 0}
+                className="flex-1 min-h-[48px] py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-95 shadow-xs cursor-pointer"
               >
-                <Minus className="w-4 h-4 stroke-[2.5]" />
-              </button>
-              <span className="w-8 text-center font-extrabold text-sm text-emerald-950">
-                {quantity}
-              </span>
-              <button
-                id="btn-increase-qty"
-                onClick={() => setQuantity(Math.min(produce.stockQuantity, quantity + 1))}
-                disabled={quantity >= produce.stockQuantity}
-                className="w-10 h-10 rounded-xl bg-white hover:bg-emerald-100 disabled:opacity-40 text-emerald-950 font-bold flex items-center justify-center transition-colors cursor-pointer shadow-xs active:scale-95"
-              >
-                <Plus className="w-4 h-4 stroke-[2.5]" />
+                <FileText className="w-4 h-4" />
+                <span>Request {quantity} {unit} • ₱{totalPrice}</span>
               </button>
             </div>
-
-            {/* Add to Cart Button */}
-            <button
-              id="btn-add-to-market-cart"
-              onClick={handleAdd}
-              disabled={produce.stockQuantity === 0}
-              className={`flex-1 min-h-[48px] py-3 px-4 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-95 shadow-xs cursor-pointer ${
-                addedAnimation
-                  ? 'bg-emerald-700 text-white'
-                  : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-              }`}
-            >
-              {addedAnimation ? (
-                <>
-                  <Check className="w-4 h-4 stroke-[3]" /> Added to Basket!
-                </>
-              ) : (
-                <>
-                  <span>Add {quantity} kg</span>
-                  <span>•</span>
-                  <span>₱{totalPrice}</span>
-                </>
-              )}
-            </button>
+            <p className="text-[10px] text-neutral-500 text-center font-medium flex items-center justify-center gap-1">
+              <ShieldCheck className="w-3 h-3 text-emerald-600" />
+              Sends a purchase request to the Admin for processing.
+            </p>
           </div>
         ) : (
           <div className="p-4 bg-white border-t border-emerald-100 flex items-center justify-between gap-3 sticky bottom-0 shadow-lg">

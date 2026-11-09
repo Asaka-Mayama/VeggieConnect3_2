@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { MobileFrame } from './components/MobileFrame';
 import { Header } from './components/Header';
 import { BuyerMarketView } from './components/BuyerMarketView';
@@ -21,6 +21,7 @@ import { SystemGuidePage } from './components/SystemGuidePage';
 import { calculateDistanceKm, calculateDistanceBetween, resolveCoordinates } from './utils/geoDistance';
 import { SUPERMARKET_STORAGE_KEY, ADMIN_HUB_STORAGE_KEY } from './utils/farmRoute';
 import { appSync } from './utils/appSync';
+import { setThemeRole } from './utils/themeStore';
 import { INITIAL_PRODUCE, INITIAL_FARMERS, INITIAL_ORDERS, INITIAL_TRANSPORT_JOBS } from './data/mockData';
 import { ProduceItem, FarmerProfile, CartItem, Order, DirectMessage, UserRole, OrderStatus, TransportJob, UserProfile, isLiveSupermarketStock } from './types';
 import { CheckCircle, AlertCircle, Sprout, MapPin, X } from 'lucide-react';
@@ -35,6 +36,16 @@ const STORAGE_KEYS = {
   JOBS: 'veggieconnect_v9_clean_jobs',
   USERS: 'veggieconnect_registered_users_v9',
 };
+
+// Apply the saved role's dark-mode preference BEFORE the first paint so the
+// app boots directly in the theme that THIS role last chose (per-role isolation).
+if (typeof window !== 'undefined') {
+  try {
+    setThemeRole(window.localStorage.getItem(STORAGE_KEYS.ROLE));
+  } catch (e) {
+    setThemeRole(null);
+  }
+}
 
 /** Reads the persisted account registry (used to recover saved GPS pins). */
 function readCachedUsers(): UserProfile[] {
@@ -239,6 +250,12 @@ export default function App() {
     return userRole === 'farmer' ? 'farmer-portal' : 'market';
   });
 
+  // Per-role dark mode: re-scope the theme whenever the logged-in role changes.
+  // Each role keeps its own saved preference — toggling as admin never affects farmer/buyer.
+  useEffect(() => {
+    setThemeRole(currentUser ? currentUser.role : null);
+  }, [currentUser?.role]);
+
   const handleSelectTab = (tab: string) => {
     if (userRole === 'farmer' && (tab === 'farms' || tab === 'market')) {
       setActiveTab('farmer-portal');
@@ -418,6 +435,9 @@ export default function App() {
   });
 
   const [isInitialLoadDone, setIsInitialLoadDone] = useState(false);
+  // Throttle for the empty-server catalog restore (see produce sync guards):
+  // at most one restore burst every 30s across the load + poll paths.
+  const lastProduceRestoreAtRef = useRef<number>(0);
   const [quotaExceeded, setQuotaExceeded] = useState(false);
 
   useEffect(() => {
@@ -452,6 +472,10 @@ export default function App() {
         'veggieconnect_v9_clean_admin_hub',
         'veggieconnect_sync_event',
       ]);
+      // Per-role dark-mode preferences are active keys — never purge them.
+      ['admin', 'farmer', 'buyer', 'transporter', 'guest'].forEach((r) =>
+        activeKeys.add(`veggieconnect_v9_clean_theme_${r}`)
+      );
       const oldKeys: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
@@ -467,9 +491,34 @@ export default function App() {
         const prodRes = await fetch('/api/products');
         if (prodRes.ok) {
           const remoteProds = await prodRes.json();
-          if (Array.isArray(remoteProds)) {
+          if (Array.isArray(remoteProds) && remoteProds.length > 0) {
+            // Server holds a live catalog — adopt it as the source of truth.
             setProduceList(remoteProds);
             localStorage.setItem(STORAGE_KEYS.PRODUCE, JSON.stringify(remoteProds));
+          } else if (Array.isArray(remoteProds)) {
+            // Empty server catalog (e.g. backend restart wiped the in-memory
+            // store). NEVER wipe this browser's catalog with an empty list —
+            // restore the server records from local data instead using
+            // idempotent absolute PUTs (safe against races and repeats), so
+            // this device's produce — and any stock deductions — survive.
+            setProduceList((localProduce) => {
+              if (
+                Array.isArray(localProduce) &&
+                localProduce.length > 0 &&
+                Date.now() - lastProduceRestoreAtRef.current > 30000
+              ) {
+                lastProduceRestoreAtRef.current = Date.now();
+                localProduce.forEach((p) => {
+                  if (!p?.id) return;
+                  fetch(`/api/products/${p.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(p),
+                  }).catch(() => {});
+                });
+              }
+              return localProduce;
+            });
           }
         }
 
@@ -687,9 +736,31 @@ export default function App() {
         }
         if (prodRes.ok) {
           const remoteProds = await prodRes.json();
-          if (Array.isArray(remoteProds)) {
+          if (Array.isArray(remoteProds) && remoteProds.length > 0) {
+            // Server holds a live catalog — adopt it as the source of truth.
             setProduceList(remoteProds);
             localStorage.setItem(STORAGE_KEYS.PRODUCE, JSON.stringify(remoteProds));
+          } else if (Array.isArray(remoteProds)) {
+            // Empty server catalog: never wipe the local one. Restore the
+            // server records from this browser (throttled, idempotent PUTs).
+            setProduceList((localProduce) => {
+              if (
+                Array.isArray(localProduce) &&
+                localProduce.length > 0 &&
+                Date.now() - lastProduceRestoreAtRef.current > 30000
+              ) {
+                lastProduceRestoreAtRef.current = Date.now();
+                localProduce.forEach((p) => {
+                  if (!p?.id) return;
+                  fetch(`/api/products/${p.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(p),
+                  }).catch(() => {});
+                });
+              }
+              return localProduce;
+            });
           }
         }
         if (userRes.ok) {
@@ -919,6 +990,34 @@ export default function App() {
 
   // Order Handlers
   const handleOrderPlaced = (newOrder: Order) => {
+    // ── Stock Validation (client choke point) ──────────────────────────────
+    // Every ordered/requested item that matches a listed market crop must fit
+    // within its available shelf stock. Custom sourcing requests that match no
+    // listed crop pass through — the Admin sources them from farmers.
+    const stockProblems: string[] = [];
+    for (const it of newOrder.items) {
+      const q = (it.produceName || '').trim().toLowerCase();
+      const prod =
+        produceList.find((p) => p.id === it.produceId) ||
+        produceList.find((p) => (p.name || '').trim().toLowerCase() === q) ||
+        (q.length > 0
+          ? produceList.find(
+              (p) =>
+                ((p.name || '').toLowerCase().includes(q) || q.includes((p.name || '').toLowerCase())) &&
+                (p.name || '').length > 0
+            )
+          : undefined);
+      if (!prod) continue;
+      const stock = typeof prod.stockQuantity === 'number' ? prod.stockQuantity : parseInt(String(prod.stockQuantity), 10) || 0;
+      if ((it.quantity || 0) > stock) {
+        stockProblems.push(`${it.produceName}: requested ${it.quantity}${it.unit || 'kg'}, only ${stock}${prod.unit || 'kg'} on the shelf`);
+      }
+    }
+    if (stockProblems.length > 0) {
+      showToast(`⚠️ Request blocked — ${stockProblems.join(' • ')}`);
+      return;
+    }
+
     const generatedJobId = `TJ-${Date.now().toString().slice(-4)}`;
     const orderPayload = {
       ...newOrder,
@@ -927,17 +1026,15 @@ export default function App() {
 
     setOrders((prev) => [orderPayload, ...prev]);
 
-    // Deduct purchased crop stock from produceList and sync with backend
+    // Deduct purchased crop stock locally (visual only) — the server
+    // POST /api/orders performs the authoritative deduction, so the client
+    // no longer needs to PUT the deducted stock back (that used to
+    // double-deduct for cart orders).
     setProduceList((prev) => {
       const updated = prev.map((prod) => {
         const matchingItem = newOrder.items.find((it) => it.produceId === prod.id);
         if (matchingItem) {
           const newStock = Math.max(0, prod.stockQuantity - matchingItem.quantity);
-          fetch(`/api/products/${prod.id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ stockQuantity: newStock }),
-          }).catch((e) => console.log('Crop stock deduct sync notice:', e));
           return {
             ...prod,
             stockQuantity: newStock,
@@ -950,12 +1047,44 @@ export default function App() {
       return updated;
     });
 
-    // Send to backend API
+    // Send to backend API — the server re-validates stock against the
+    // latest shelf state so two buyers requesting the same remaining stock
+    // simultaneously can never oversell it. On rejection the local order
+    // and stock deduction are reverted.
     fetch('/api/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(orderPayload),
-    }).catch((e) => console.log('Order sync notice:', e));
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          const msg = data?.error || `Server rejected order ${orderPayload.id}`;
+          // Revert: remove the local order and restore the deducted stock
+          setOrders((prev) => prev.filter((o) => o.id !== orderPayload.id));
+          setProduceList((prev) => {
+            const restored = prev.map((prod) => {
+              const matchingItem = newOrder.items.find((it) => it.produceId === prod.id);
+              if (matchingItem) {
+                const restoredStock = prod.stockQuantity + matchingItem.quantity;
+                return {
+                  ...prod,
+                  stockQuantity: restoredStock,
+                  sellerStatus:
+                    prod.sellerStatus === 'sold_out' && restoredStock > 0
+                      ? ('bought_and_stocked' as const)
+                      : prod.sellerStatus,
+                };
+              }
+              return prod;
+            });
+            localStorage.setItem(STORAGE_KEYS.PRODUCE, JSON.stringify(restored));
+            return restored;
+          });
+          showToast(`⚠️ ${msg}`);
+        }
+      })
+      .catch((e) => console.log('Order sync notice:', e));
 
     appSync.publish('ORDERS_UPDATED', orderPayload, 'market');
     window.dispatchEvent(new CustomEvent('veggieconnect:orders-updated', { detail: orderPayload }));
@@ -1025,37 +1154,68 @@ export default function App() {
       let totalRestockedKg = 0;
 
       if (itemsToRestock.length > 0) {
-        setProduceList((prev) => {
-          const updated = prev.map((prod) => {
-            const matchingItem = itemsToRestock.find(
-              (it) =>
-                it.produceId === prod.id ||
-                (it.produceName && prod.name && it.produceName.trim().toLowerCase() === prod.name.trim().toLowerCase())
-            );
-            if (matchingItem) {
-              const qty = Number(matchingItem.quantity) || 0;
+        // Restock each item into exactly ONE record — the WAREHOUSE record the
+        // Stocks menu displays (supermarket-owned), so a farmer's similarly
+        // named listing never receives the returned stock. Real produce ids
+        // (direct basket lots) keep their exact-id match first.
+        const isWarehouseOwnedRecord = (p: ProduceItem) =>
+          p.sellerStoreName === 'VeggieConnect Supermarket' ||
+          p.sellerStatus === 'bought_and_stocked' ||
+          p.farmName === 'VeggieConnect Supermarket' ||
+          p.farmerName === 'VeggieConnect Central Produce Hub' ||
+          p.farmerId === 'admin-main' ||
+          (typeof p.id === 'string' && p.id.startsWith('sm-'));
+
+        // Only return stock that was actually taken off the shelf:
+        //  • Direct basket lots (real produce ids) were deducted at checkout →
+        //    always restock.
+        //  • REQUEST lots ("req-prod-*" ids) were deducted ONLY when the order
+        //    left 'pending' (fulfilled). Cancelling a still-pending request
+        //    must NOT restock — nothing was ever deducted, and doing so would
+        //    create phantom stock on the admin's Stocks menu.
+        const cancelWasFulfilled =
+          (targetOrder as any)?.requestStockDeducted === true || previousStatus !== 'pending';
+        const isReqLotForRestock = (pid: any) => !pid || String(pid).startsWith('req-prod-');
+
+        const restockTargets = new Map<string, number>();
+        itemsToRestock.forEach((it) => {
+          const qty = Number(it.quantity) || 0;
+          if (qty <= 0) return;
+          if (isReqLotForRestock(it.produceId) && !cancelWasFulfilled) return;
+          const requestedName = String(it.produceName || '').trim().toLowerCase();
+          const target =
+            produceList.find((p) => it.produceId && p.id === it.produceId) ||
+            produceList
+              .filter((p) => isWarehouseOwnedRecord(p) && (p.name || '').trim().toLowerCase() === requestedName)
+              .sort((a, b) => (Number(b.stockQuantity) || 0) - (Number(a.stockQuantity) || 0))[0] ||
+            produceList.find((p) => (p.name || '').trim().toLowerCase() === requestedName);
+          if (target?.id) {
+            restockTargets.set(target.id, (restockTargets.get(target.id) || 0) + qty);
+          }
+        });
+
+        if (restockTargets.size > 0) {
+          // Visual-only restock — the server restocks the warehouse
+          // authoritatively when PUT /api/orders/:id marks the order cancelled.
+          setProduceList((prev) => {
+            const updated = prev.map((prod) => {
+              const qty = restockTargets.get(prod.id);
+              if (!qty) return prod;
               totalRestockedKg += qty;
               const newStock = prod.stockQuantity + qty;
               const newSellerStatus =
                 prod.sellerStatus === 'sold_out' ? ('bought_and_stocked' as const) : prod.sellerStatus;
-
-              fetch(`/api/products/${prod.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ stockQuantity: newStock, sellerStatus: newSellerStatus }),
-              }).catch((e) => console.log('Crop stock restock sync notice:', e));
 
               return {
                 ...prod,
                 stockQuantity: newStock,
                 sellerStatus: newSellerStatus,
               };
-            }
-            return prod;
+            });
+            localStorage.setItem(STORAGE_KEYS.PRODUCE, JSON.stringify(updated));
+            return updated;
           });
-          localStorage.setItem(STORAGE_KEYS.PRODUCE, JSON.stringify(updated));
-          return updated;
-        });
+        }
       }
 
       // Cancel associated transport job
@@ -1123,11 +1283,14 @@ export default function App() {
         return updated;
       });
 
-      // Sync cancellation to backend
+      // Sync cancellation to backend — include the full order so a backend
+      // that lost the row recreates it WITH its items (the server restocks
+      // the warehouse from those items).
       fetch(`/api/orders/${orderId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          ...(targetOrder || {}),
           status: 'cancelled',
           cancelReason: finalCancelReason,
           cancelledAt: timeNow,
@@ -1142,9 +1305,99 @@ export default function App() {
       return;
     }
 
+    // ── Request-lot warehouse deduction (visual mirror, exactly once) ───────
+    // When an order FIRST leaves 'pending' into ANY active fulfillment status
+    // (confirmed / ready_for_pickup_delivery / picked_up / in_transit /
+    // completed), deduct its request-lot items (placeholder "req-prod-*" ids)
+    // from the WAREHOUSE records the admin's Stocks menu displays.
+    //
+    // WHY: orders can be completed from several desks ("Fulfill Buyer
+    // Request", "Mark Delivered", receipt "Mark Order as Completed", haul
+    // delivery) — previously only the Fulfill desk deducted, so completing an
+    // order anywhere else left the sold quantity stuck on the Stocks menu.
+    // The backend performs the authoritative deduction for the same
+    // transition; this mirror keeps the admin's view in sync instantly. The
+    // order's requestStockDeducted flag guarantees exactly one deduction even
+    // if the order advances through several statuses.
+    const FULFILLMENT_STATUSES = [
+      'confirmed',
+      'ready_for_pickup_delivery',
+      'picked_up',
+      'in_transit',
+      'completed',
+    ];
+    const isRequestLotItem = (pid: any) => !pid || String(pid).startsWith('req-prod-');
+    const cropNamesMatch = (productName: any, requested: string) => {
+      const a = String(productName || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+      const b = String(requested || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+      if (!a || !b) return false;
+      return a === b || a.includes(b) || b.includes(a);
+    };
+    const isWarehouseOwnedRecord = (p: ProduceItem) =>
+      p.sellerStoreName === 'VeggieConnect Supermarket' ||
+      p.sellerStatus === 'bought_and_stocked' ||
+      p.farmName === 'VeggieConnect Supermarket' ||
+      p.farmerName === 'VeggieConnect Central Produce Hub' ||
+      p.farmerId === 'admin-main' ||
+      (typeof p.id === 'string' && p.id.startsWith('sm-'));
+
+    const orderHadRequestLots = Boolean(
+      targetOrder && (targetOrder.items || []).some((it) => isRequestLotItem(it.produceId))
+    );
+    const shouldDeductRequestLots =
+      orderHadRequestLots &&
+      targetOrder &&
+      previousStatus !== 'cancelled' &&
+      !targetOrder.requestStockDeducted &&
+      (previousStatus === 'pending' || previousStatus === undefined) &&
+      FULFILLMENT_STATUSES.includes(newStatus);
+
+    if (shouldDeductRequestLots && targetOrder) {
+      const nextList = [...produceList];
+      let deductedLots = 0;
+      for (const item of targetOrder.items || []) {
+        if (!isRequestLotItem(item.produceId)) continue; // direct basket lot — deducted at checkout
+        const requestedName = String(item.produceName || '').trim();
+        const needed = Number(item.quantity) || 0;
+        if (!requestedName || needed <= 0) continue;
+        // Warehouse-first target: highest-stock owned record matching the crop,
+        // then any exact-name record — same matching rules as the backend.
+        const target =
+          nextList
+            .filter((p) => isWarehouseOwnedRecord(p) && cropNamesMatch(p.name, requestedName))
+            .sort((a, b) => (Number(b.stockQuantity) || 0) - (Number(a.stockQuantity) || 0))[0] ||
+          nextList.find((p) => (p.name || '').trim().toLowerCase() === requestedName.toLowerCase());
+        if (!target) continue;
+        const idx = nextList.findIndex((p) => p.id === target.id);
+        if (idx < 0) continue;
+        const newQty = Math.max(0, (Number(target.stockQuantity) || 0) - needed);
+        nextList[idx] = { ...target, stockQuantity: newQty };
+        deductedLots += 1;
+      }
+      if (deductedLots > 0) {
+        setProduceList(nextList);
+        localStorage.setItem(STORAGE_KEYS.PRODUCE, JSON.stringify(nextList));
+        appSync.publish('PRODUCE_UPDATED', { requestLotsDeducted: true, orderId }, 'admin');
+        showToast(
+          `✅ Order #${orderId} — ${deductedLots} requested lot(s) deducted from warehouse stock`
+        );
+      }
+    }
+
     // Regular non-cancellation status update
     setOrders((prev) => {
-      const updated = prev.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o));
+      const updated = prev.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              status: newStatus,
+              // Exactly-once marker: request lots are now deducted for this order
+              ...(orderHadRequestLots && !o.requestStockDeducted && FULFILLMENT_STATUSES.includes(newStatus)
+                ? { requestStockDeducted: true }
+                : {}),
+            }
+          : o
+      );
       localStorage.setItem(STORAGE_KEYS.ORDERS, JSON.stringify(updated));
       return updated;
     });
@@ -1163,11 +1416,13 @@ export default function App() {
       );
     }
 
-    // Sync to backend
+    // Sync to backend — send the FULL order (not just the status) so a
+    // backend that lost the row (restart) recreates it WITH its items;
+    // the server-side request-lot warehouse deduction needs those items.
     fetch(`/api/orders/${orderId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus }),
+      body: JSON.stringify(targetOrder ? { ...targetOrder, status: newStatus } : { status: newStatus }),
     }).catch((e) => console.log('Order status sync notice:', e));
 
     appSync.publish('ORDERS_UPDATED', { id: orderId, status: newStatus }, 'admin');
@@ -1373,18 +1628,58 @@ export default function App() {
     setEditingProduce(null);
   };
 
+  // Visual-only produce update (no backend PUT). Used by the Admin fulfill /
+  // cancel flows where the SERVER performs the authoritative stock change when
+  // the order status changes (PUT /api/orders/:id) — the client only mirrors
+  // the result locally so exactly one stock change is ever persisted.
+  const handleVisualUpdateProduce = (updated: ProduceItem) => {
+    setProduceList((prev) => {
+      const exists = prev.some((item) => item.id === updated.id);
+      const nextList = exists
+        ? prev.map((item) => (item.id === updated.id ? updated : item))
+        : [updated, ...prev];
+      localStorage.setItem(STORAGE_KEYS.PRODUCE, JSON.stringify(nextList));
+      return nextList;
+    });
+  };
+
   const handleUpdateProduceStock = (id: string, newStock: number) => {
+    // A farmer crop that hits 0 stock is "Sold Out" — flag it so every view
+    // (Market catalog, ownership filters, backend rows) agrees on its state.
+    // Stocking it again flips it back to an active submitted listing.
+    const target = produceList.find((item) => item.id === id);
+    const isSupermarketStockItem = Boolean(
+      target &&
+        (target.sellerStoreName === 'VeggieConnect Supermarket' ||
+          target.sellerStatus === 'bought_and_stocked' ||
+          target.farmerId === 'admin-main' ||
+          target.id.startsWith('sm-'))
+    );
+    const nextSellerStatus = !isSupermarketStockItem && target
+      ? newStock === 0
+        ? ('sold_out' as const)
+        : target.sellerStatus === 'sold_out'
+          ? ('submitted' as const)
+          : target.sellerStatus
+      : target?.sellerStatus;
+
     setProduceList((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, stockQuantity: newStock } : item))
+      prev.map((item) =>
+        item.id === id ? { ...item, stockQuantity: newStock, sellerStatus: nextSellerStatus } : item
+      )
     );
 
     fetch(`/api/products/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stockQuantity: newStock }),
+      body: JSON.stringify({ stockQuantity: newStock, sellerStatus: nextSellerStatus }),
     }).catch((e) => console.log('Stock sync notice:', e));
 
-    showToast('Stock quantity updated');
+    showToast(
+      newStock === 0
+        ? 'Crop marked as Sold Out — hidden from the Market'
+        : 'Stock quantity updated'
+    );
   };
 
   const handleUpdateProducePrice = (id: string, newPrice: number) => {
@@ -1960,23 +2255,85 @@ export default function App() {
   }, [produceList, buyerOrigin, registeredUsers]);
 
   // Marketplace catalog strictly prepared for retail buyers:
-  // 1. Fully anonymized (farmers remain anonymous from buyers; seller is VeggieConnect Central Market)
-  // 2. Deduplicated by vegetable name so buyers can easily browse and submit purchase requests
-  // 3. Distance calculated dynamically from Central Hub to buyer location
+  // 1. FARMER CROPS ONLY — the market displays the farmers' current crops, never
+  //    the Admin's own warehouse/supermarket stock (Admin buys from farmers and
+  //    fulfills buyer requests separately).
+  // 2. OWNERSHIP GATE — only crops that are CURRENTLY LISTED under a registered
+  //    farmer account are shown. If a farmer account has no crops listed,
+  //    nothing from them appears; if no farmer has crops, the Market is empty.
+  //    Stale listings whose farm no longer belongs to any registered farmer
+  //    account never surface here.
+  // 3. SOLD-OUT ITEMS HIDDEN — crops with 0 stock are never shown in the Market.
+  // 4. Fully anonymized (farmers remain anonymous from buyers; no farmer name or
+  //    farm/store name is exposed — buyers only see the VeggieConnect platform).
+  // 5. Deduplicated by vegetable name so buyers can easily browse and submit
+  //    purchase requests for a specific crop.
   const supermarketProduceList = useMemo(() => {
     const hubLocation = 'VeggieConnect Central Market (Dumaguete City)';
     const hubLat = 9.3080;
     const hubLng = 123.3105;
 
-    const seenCrops = new Set<string>();
     const anonymizedList: ProduceItem[] = [];
 
-    // Prioritize active produce items from state
-    produceList.forEach((item) => {
-      const normName = (item.name || '').trim().toLowerCase();
-      if (!normName || seenCrops.has(normName)) return;
-      seenCrops.add(normName);
+    // Identifies produce that is owned/stocked by the Admin (VeggieConnect
+    // Supermarket warehouse). Such items must NEVER appear in the buyer Market —
+    // buyers browse the farmers' live crops and request them instead.
+    const isAdminStock = (p: ProduceItem): boolean =>
+      p.sellerStoreName === 'VeggieConnect Supermarket' ||
+      p.sellerStatus === 'bought_and_stocked' ||
+      p.farmName === 'VeggieConnect Supermarket' ||
+      p.farmerName === 'VeggieConnect Central Produce Hub' ||
+      p.farmerId === 'admin-main' ||
+      (typeof p.id === 'string' && p.id.startsWith('sm-'));
 
+    const stockOf = (v?: ProduceItem | null) =>
+      v ? (typeof v.stockQuantity === 'number' ? v.stockQuantity : parseInt(String(v.stockQuantity), 10) || 0) : 0;
+
+    // Registered farmer identities (ids, farm names, farmer names). A crop may
+    // only enter the buyer Market when it is still owned by one of these
+    // accounts — this is what keeps sold-out, deleted or orphaned crops out.
+    const validFarmerIds = new Set<string>();
+    const validFarmNames = new Set<string>();
+    const validFarmerNames = new Set<string>();
+    registeredUsers
+      .filter((u) => u.role === 'farmer')
+      .forEach((f) => {
+        if (f.id) validFarmerIds.add(f.id);
+        if (f.farmName) validFarmNames.add(f.farmName.trim().toLowerCase());
+        if (f.name) validFarmerNames.add(f.name.trim().toLowerCase());
+      });
+    if (currentUser && currentUser.role === 'farmer') {
+      if (currentUser.id) validFarmerIds.add(currentUser.id);
+      if (currentUser.farmName) validFarmNames.add(currentUser.farmName.trim().toLowerCase());
+      if (currentUser.name) validFarmerNames.add(currentUser.name.trim().toLowerCase());
+    }
+
+    const isOwnedByRegisteredFarmer = (p: ProduceItem): boolean =>
+      Boolean(
+        (p.farmerId && validFarmerIds.has(p.farmerId)) ||
+          (p.farmName && validFarmNames.has(p.farmName.trim().toLowerCase())) ||
+          (p.farmerName && validFarmerNames.has(p.farmerName.trim().toLowerCase()))
+      );
+
+    // Only farmer-submitted crops with available stock enter the buyer Market.
+    // When several farmers list the same crop, keep the best-stocked listing so
+    // the market always surfaces the freshest availability.
+    const byName = new Map<string, ProduceItem>();
+    produceList.forEach((item) => {
+      if (!item) return;
+      if (isAdminStock(item)) return; // Admin warehouse stock is never listed
+      if (!isOwnedByRegisteredFarmer(item)) return; // Not a current farmer's listed crop
+      if (item.sellerStatus === 'archived' || item.sellerStatus === 'sold_out') return;
+      if (stockOf(item) <= 0) return; // Stock 0 = hidden from Market
+      const normName = (item.name || '').trim().toLowerCase();
+      if (!normName) return;
+      const existing = byName.get(normName);
+      if (!existing || stockOf(item) > stockOf(existing)) {
+        byName.set(normName, item);
+      }
+    });
+
+    byName.forEach((item) => {
       const dynamicDist = calculateDistanceBetween(
         buyerOrigin,
         {
@@ -2001,7 +2358,7 @@ export default function App() {
     });
 
     return anonymizedList;
-  }, [produceList, buyerOrigin]);
+  }, [produceList, buyerOrigin, registeredUsers, currentUser]);
 
   const dynamicFarmers = useMemo(() => {
     return allFarmers.map((farmer) => {
@@ -2283,6 +2640,50 @@ export default function App() {
         loggedInUser = { ...user, latitude: c.lat, longitude: c.lng };
       }
     }
+
+    // Identity self-heal: crop listings created during an older session may
+    // carry a farmerId that no longer matches this account's current id (the
+    // client and the backend used to generate different ids for the same
+    // registration). Re-bind every crop whose farm name or farmer name matches
+    // the logging-in farmer so they can see and manage their own listings —
+    // and so the Market's ownership check recognizes them again.
+    if (loggedInUser.role === 'farmer') {
+      const farmKey = (loggedInUser.farmName || '').trim().toLowerCase();
+      const farmerNameKey = (loggedInUser.name || '').trim().toLowerCase();
+      const isSupermarketStockItem = (p: ProduceItem): boolean =>
+        p.sellerStoreName === 'VeggieConnect Supermarket' ||
+        p.sellerStatus === 'bought_and_stocked' ||
+        p.farmerId === 'admin-main' ||
+        (p.id || '').startsWith('sm-');
+
+      const relinkedIds: string[] = [];
+      const nextList = produceList.map((p) => {
+        if (!p || !p.farmerId || p.farmerId === loggedInUser.id || isSupermarketStockItem(p)) return p;
+        const farmMatch = Boolean(farmKey && p.farmName && p.farmName.trim().toLowerCase() === farmKey);
+        const nameMatch = Boolean(farmerNameKey && p.farmerName && p.farmerName.trim().toLowerCase() === farmerNameKey);
+        if (farmMatch || nameMatch) {
+          relinkedIds.push(p.id);
+          return { ...p, farmerId: loggedInUser.id };
+        }
+        return p;
+      });
+
+      if (relinkedIds.length > 0) {
+        setProduceList(nextList);
+        localStorage.setItem(STORAGE_KEYS.PRODUCE, JSON.stringify(nextList));
+        relinkedIds.forEach((id) => {
+          const healed = nextList.find((p) => p.id === id);
+          if (healed) {
+            fetch(`/api/products/${id}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(healed),
+            }).catch(() => {});
+          }
+        });
+      }
+    }
+
     setCurrentUser(loggedInUser);
     setUserRole(loggedInUser.role);
     localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(loggedInUser));
@@ -2399,6 +2800,7 @@ export default function App() {
             onUpdateUser={handleUpdateUserFromAdmin}
             onDeleteUser={handleDeleteUserFromAdmin}
             onUpdateProduce={handleEditProduce}
+            onVisualUpdateProduce={handleVisualUpdateProduce}
             onDeleteProduce={handleDeleteProduce}
             onBuyFarmerProduct={handleBuyFarmerProduct}
             onPutInSupermarketStock={handlePutInSupermarketStock}

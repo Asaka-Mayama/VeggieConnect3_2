@@ -137,7 +137,7 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `VeggieConnect_Chapter4_Dataset_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute('download', `VeggieConnect_Orders_${new Date().toISOString().slice(0, 10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -196,13 +196,13 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
           <div className="space-y-1.5">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-400/20 text-emerald-300 text-xs font-bold border border-emerald-400/30">
               <Award className="w-3.5 h-3.5" />
-              <span>Capstone Thesis Evaluation Suite · Chapter 4 Data</span>
+              <span>Live System Overview</span>
             </div>
             <h1 className="text-2xl font-black tracking-tight text-white font-display">
-              System Analytics & Defense Reporting
+              System Analytics &amp; Reports
             </h1>
             <p className="text-xs text-emerald-200/80 max-w-xl">
-              Quantitative performance evaluation of farm-gate vegetable procurement, supermarket brokerage margins, and logistics fulfillment in Negros Oriental.
+              Sales performance, procurement margins, and delivery fulfillment across Negros Oriental.
             </p>
           </div>
 
@@ -210,7 +210,7 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
             <button
               onClick={handleExportOrdersCSV}
               className="px-3.5 py-2.5 rounded-2xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs flex items-center gap-2 border border-white/20 transition-all cursor-pointer active:scale-95 shadow-sm"
-              title="Download full order transaction log as CSV for your thesis defense paper"
+              title="Download full order transaction log as CSV"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-300" />
               <span>Export Orders CSV</span>
@@ -428,7 +428,7 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
           </div>
 
           <div className="pt-2 text-[11px] text-slate-500 border-t border-slate-100 leading-relaxed">
-            💡 <strong>Thesis Defense Note:</strong> All transactions adhere to the farm-to-supermarket brokerage paradigm, protecting smallholders with guaranteed cash payouts while guaranteeing freshness for buyers.
+            💡 All transactions follow the farm-to-supermarket model — fair payouts for farmers, fresh produce for buyers.
           </div>
         </div>
       </div>
@@ -441,7 +441,7 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
               Recent System Order Audit Trail
             </h2>
             <p className="text-xs text-slate-500">
-              Live records supporting empirical results in Chapter 4
+              Live records of all buyer and admin transactions
             </p>
           </div>
           <div className="text-xs text-slate-400 font-mono">

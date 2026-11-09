@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sprout, Plus, Package, TrendingUp, Edit3, Trash2, ShieldCheck, CheckCircle2, Clock, AlertCircle, LogOut, MessageSquare, Truck, User, Camera, Edit2, BarChart2, ArrowRight } from 'lucide-react';
+import { Sprout, Plus, Package, TrendingUp, Edit3, Trash2, ShieldCheck, CheckCircle2, Clock, AlertCircle, LogOut, MessageSquare, Truck, User, Camera, Edit2, BarChart2, ArrowRight, ChevronDown } from 'lucide-react';
 import { ProduceItem, FarmerProfile, Order, UserProfile } from '../types';
 import { DAPriceWatchWidget } from './DAPriceWatchWidget';
 import { DAPriceWatchModal } from './DAPriceWatchModal';
@@ -49,16 +49,38 @@ export const FarmerDashboardView: React.FC<FarmerDashboardViewProps> = ({
   const [stockInput, setStockInput] = useState<string>('');
   const [isPriceWatchModalOpen, setIsPriceWatchModalOpen] = useState(false);
   const [priceWatchSearch, setPriceWatchSearch] = useState('');
+  // DA price intelligence is secondary info — keep it minimized until opened.
+  const [isPriceSectionOpen, setIsPriceSectionOpen] = useState(false);
 
   // Farmer specific produce (exclude supermarket store inventory and fully procured lots).
   // When the Buy Desk procures the entire lot (0 stock remaining with a bought quantity),
   // the item is removed from the farmer's active crop listings.
-  const myProduce = produceList.filter(
-    (item) =>
-      item.farmerId === farmer.id &&
-      (!item.sellerStoreName || item.sellerStoreName !== 'VeggieConnect Supermarket') &&
-      !(item.stockQuantity === 0 && (item.boughtQuantity || 0) > 0)
-  );
+  // A crop belongs to this farmer when its farmerId matches — or, as a
+  // self-healing fallback for listings created before the account id was
+  // stabilized, when the farm name or farmer name matches this account.
+  const farmKey = (farmer.farmName || '').trim().toLowerCase();
+  const farmerNameKey = (farmer.name || '').trim().toLowerCase();
+  const useOwnershipFallback = Boolean(farmer.id && farmer.id !== 'farmer-none');
+  const myProduce = produceList.filter((item) => {
+    if (!item) return false;
+    // Admin's supermarket shelf stock is never part of a farmer's own listings
+    if (item.sellerStoreName === 'VeggieConnect Supermarket') return false;
+    if (item.sellerStatus === 'bought_and_stocked') return false;
+    const ownedById = Boolean(item.farmerId && item.farmerId === farmer.id);
+    const ownedByFarm = Boolean(
+      useOwnershipFallback && farmKey && item.farmName && item.farmName.trim().toLowerCase() === farmKey
+    );
+    const ownedByName = Boolean(
+      useOwnershipFallback &&
+        farmerNameKey &&
+        item.farmerName &&
+        item.farmerName.trim().toLowerCase() === farmerNameKey
+    );
+    if (!ownedById && !ownedByFarm && !ownedByName) return false;
+    // Fully procured lots (0 stock left after the Buy Desk purchase) leave the active listings
+    if (item.stockQuantity === 0 && (item.boughtQuantity || 0) > 0) return false;
+    return true;
+  });
 
   // Farmer specific orders
   const isRealFarmer = Boolean(farmer && farmer.id && farmer.id !== 'farmer-none');
@@ -85,9 +107,13 @@ export const FarmerDashboardView: React.FC<FarmerDashboardViewProps> = ({
       o.status === 'in_transit'
   ).length;
 
-  const totalDirectSales = myOrders.reduce((sum, o) => sum + (Number(o.totalAmount ?? o.subtotal) || 0), 0);
+  // Farmer sales figures count ONLY successful (completed) orders —
+  // cancelled and still-in-progress orders never count as sales.
   const completedOrders = myOrders.filter((o) => o.status === 'completed');
-  const totalCompletedSales = completedOrders.reduce((sum, o) => sum + (Number(o.totalAmount ?? o.subtotal) || 0), 0);
+  const totalSuccessfulSales = completedOrders.reduce(
+    (sum, o) => sum + (Number(o.totalAmount ?? o.subtotal) || 0),
+    0
+  );
 
   return (
     <div className="flex flex-col space-y-4 p-3.5 pb-8 w-full bg-white text-neutral-900">
@@ -152,7 +178,7 @@ export const FarmerDashboardView: React.FC<FarmerDashboardViewProps> = ({
           </div>
           <div className="mt-2">
             <div className="text-xl font-extrabold text-neutral-900">
-              ₱{totalDirectSales.toFixed(2)}
+              ₱{totalSuccessfulSales.toFixed(2)}
             </div>
             <div className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1 mt-0.5">
               <TrendingUp className="w-3 h-3 text-emerald-600" /> Farm-gate revenue from Seller
@@ -176,7 +202,8 @@ export const FarmerDashboardView: React.FC<FarmerDashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Total Sales Banner at bottom of Crop Sales Payouts & Listed Vegetables - Click redirects to Completed Orders */}
+      {/* Total Sales Banner — Total Sales & Completed count sit on one straight line.
+          Click redirects to Completed Orders */}
       <button
         type="button"
         id="btn-farmer-total-sales"
@@ -185,44 +212,66 @@ export const FarmerDashboardView: React.FC<FarmerDashboardViewProps> = ({
             onNavigateToCompletedOrders();
           }
         }}
-        className="w-full bg-gradient-to-r from-emerald-800 via-teal-800 to-emerald-900 hover:from-emerald-700 hover:to-teal-800 text-white p-3.5 rounded-2xl shadow-sm border border-emerald-700/60 flex items-center justify-between gap-3 text-left transition-all active:scale-[0.99] cursor-pointer group"
+        className="w-full bg-gradient-to-r from-emerald-800 via-teal-800 to-emerald-900 hover:from-emerald-700 hover:to-teal-800 text-white p-3.5 rounded-2xl shadow-sm border border-emerald-700/60 flex items-center gap-3 text-left transition-all active:scale-[0.99] cursor-pointer group"
         title="Click to view Completed Orders"
       >
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center text-white flex-shrink-0 group-hover:bg-white/25 transition-colors">
-            <CheckCircle2 className="w-5 h-5 text-emerald-300" />
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[11px] font-bold text-emerald-200 uppercase tracking-wider">
-                Total Sales
-              </span>
-              <span className="text-[9px] bg-emerald-500/80 text-white font-extrabold px-1.5 py-0.2 rounded-md">
-                {completedOrders.length} Completed
-              </span>
-            </div>
-            <div className="text-xl font-black text-white font-mono mt-0.5">
-              ₱{totalCompletedSales.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-            </div>
-            <p className="text-[10px] text-emerald-200/90 mt-0.5">
-              Tap to view completed payouts & orders in Orders tab
-            </p>
-          </div>
+        <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center text-white flex-shrink-0 group-hover:bg-white/25 transition-colors">
+          <CheckCircle2 className="w-5 h-5 text-emerald-300" />
         </div>
-        <div className="flex items-center gap-1 bg-white/15 px-3 py-1.5 rounded-xl text-xs font-bold text-white group-hover:bg-white/25 transition-colors flex-shrink-0">
-          <span>Completed Orders</span>
-          <ArrowRight className="w-3.5 h-3.5" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-bold text-emerald-200 uppercase tracking-wider whitespace-nowrap">
+              Total Sales
+            </span>
+            <span className="text-[9px] bg-emerald-500/80 text-white font-extrabold px-1.5 py-0.5 rounded-md whitespace-nowrap flex-shrink-0">
+              {completedOrders.length} Completed
+            </span>
+          </div>
+          <div className="text-xl font-black text-white font-mono mt-0.5">
+            ₱{totalSuccessfulSales.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+          </div>
+          <p className="text-[10px] text-emerald-200/90 mt-0.5 flex items-center gap-1">
+            <span className="truncate">Tap to view completed orders in Orders tab</span>
+            <ArrowRight className="w-3 h-3 flex-shrink-0" />
+          </p>
         </div>
       </button>
 
-      {/* Official DA Price Watch & AnoMura Market Intelligence Widget */}
-      <DAPriceWatchWidget
-        myProduce={myProduce}
-        onOpenFullBulletin={(searchCrop) => {
-          setPriceWatchSearch(searchCrop || '');
-          setIsPriceWatchModalOpen(true);
-        }}
-      />
+      {/* Official DA Price Watch — collapsible, minimized by default */}
+      <div className="bg-white border border-neutral-200 rounded-2xl shadow-xs overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setIsPriceSectionOpen(!isPriceSectionOpen)}
+          className="w-full flex items-center justify-between gap-2 px-3.5 py-3 text-left cursor-pointer hover:bg-neutral-50 transition-colors"
+          aria-expanded={isPriceSectionOpen}
+        >
+          <span className="flex items-center gap-2 min-w-0">
+            <span className="w-7 h-7 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center flex-shrink-0 text-xs">
+              📈
+            </span>
+            <span className="min-w-0">
+              <span className="block text-xs font-bold text-neutral-900">DA Price Watch</span>
+              <span className="block text-[10px] text-neutral-500 truncate">
+                Official Bantay Presyo rates vs your crop prices
+              </span>
+            </span>
+          </span>
+          <ChevronDown
+            className={`w-4 h-4 text-emerald-700 flex-shrink-0 transition-transform ${isPriceSectionOpen ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {isPriceSectionOpen && (
+          <div className="px-3 pb-3">
+            <DAPriceWatchWidget
+              myProduce={myProduce}
+              onOpenFullBulletin={(searchCrop) => {
+                setPriceWatchSearch(searchCrop || '');
+                setIsPriceWatchModalOpen(true);
+              }}
+            />
+          </div>
+        )}
+      </div>
 
       {/* Produce Inventory Management Section - Clean White Card */}
       <div className="space-y-3">

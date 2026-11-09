@@ -7,6 +7,7 @@ import {
   Store,
   MessageSquare,
   ChevronRight,
+  ChevronDown,
   FileText,
   Phone,
   X,
@@ -58,6 +59,20 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const [cancelReasonInput, setCancelReasonInput] = useState<string>('');
   // Distance / ETA reported by each live route map (supermarket hub ➔ farmer's house)
   const [routeStatsByOrder, setRouteStatsByOrder] = useState<Record<string, { km: number; durationText: string }>>({});
+
+  // Order cards stay collapsed to a compact summary until the user expands them.
+  const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(new Set());
+  const toggleOrderExpanded = (orderId: string) => {
+    setExpandedOrderIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(orderId)) {
+        next.delete(orderId);
+      } else {
+        next.add(orderId);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (initialFilter) {
@@ -118,7 +133,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         return userRole === 'buyer' ? (
           <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
             <Clock className="w-3 h-3 text-amber-700" />
-            <span>Step 1: Request Submitted — Awaiting Admin</span>
+            <span>Request Submitted — Awaiting Admin</span>
           </span>
         ) : (
           <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">Buyer Request Placed — Awaiting Review</span>
@@ -127,18 +142,18 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         return userRole === 'buyer' ? (
           <span className="bg-blue-100 text-blue-900 border border-blue-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
             <Clock className="w-3 h-3 text-blue-700" />
-            <span>Step 2 &amp; 3: Admin Reviewing &amp; Checking Stocks</span>
+            <span>Admin Reviewing &amp; Checking Stocks</span>
           </span>
         ) : (
           <span className="bg-blue-100 text-blue-900 border border-blue-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">Confirmed — Admin Processing</span>
         );
       case 'harvesting_packing':
-        return <span className="bg-emerald-100 text-emerald-900 border border-emerald-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">Step 3: Checking Warehouse Stocks</span>;
+        return <span className="bg-emerald-100 text-emerald-900 border border-emerald-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">Checking Warehouse Stocks</span>;
       case 'ready_for_pickup_delivery':
         return (
           <span className="bg-emerald-600 text-white font-bold text-[10px] px-2.5 py-0.5 rounded-full shadow-xs flex items-center gap-1">
             <CheckCircle2 className="w-3 h-3 text-white" />
-            <span>{userRole === 'buyer' ? 'Step 4: Request Fulfilled from Stock!' : 'Ready for Depot Pickup / Delivery'}</span>
+            <span>{userRole === 'buyer' ? 'Request Fulfilled from Stock!' : 'Ready for Depot Pickup / Delivery'}</span>
           </span>
         );
       case 'picked_up':
@@ -169,10 +184,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 
   const getStepNumber = (status: OrderStatus) => {
     switch (status) {
-      case 'pending': return 1; // Step 1: Buyer Request Submitted
-      case 'confirmed': return 2; // Step 2: Admin Processing
-      case 'harvesting_packing': return 3; // Step 3: Admin Checking Stocks
-      case 'ready_for_pickup_delivery': return 4; // Step 4: Fulfillment
+      case 'pending': return 1; // Buyer Request Submitted
+      case 'confirmed': return 2; // Admin Processing
+      case 'harvesting_packing': return 3; // Admin Checking Stocks
+      case 'ready_for_pickup_delivery': return 4; // Fulfillment
       case 'picked_up': return 4;
       case 'in_transit': return 4;
       case 'completed': return 4;
@@ -190,7 +205,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           </h2>
           <p className="text-xs text-neutral-500 font-medium">
             {userRole === 'buyer'
-              ? 'Quality-inspected, packed & delivered directly by VeggieConnect Logistics'
+              ? 'Track the status of each order and view receipts'
               : 'Vegetables purchased & fulfilled by VeggieConnect Store'}
           </p>
         </div>
@@ -214,6 +229,12 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         ))}
       </div>
 
+      {filteredOrders.length > 0 && (
+        <p className="text-[10px] text-neutral-400 font-medium -mt-2 px-1">
+          Tap an order to view full details, map &amp; actions
+        </p>
+      )}
+
       {filteredOrders.length === 0 ? (
         <div className="bg-white border border-emerald-200/80 rounded-2xl p-8 text-center space-y-3 shadow-xs">
           <div className="w-14 h-14 rounded-full bg-emerald-50 text-emerald-800 flex items-center justify-center mx-auto text-2xl">
@@ -230,11 +251,19 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         <div className="space-y-3">
           {filteredOrders.map((order) => {
             const step = getStepNumber(order.status);
+            const isOrderExpanded = expandedOrderIds.has(order.id);
 
             // LIVE ROUTE (farmer): supermarket hub ➔ the supplying farm's house while the order is active.
             // Resolve strictly from THIS order (item farmer first, then order farmer/account) so two
             // active orders can never inherit the viewer's coordinates or each other's route.
             const isLiveTransaction = order.status !== 'completed' && order.status !== 'cancelled';
+            // Buyer rule: the live route map stays HIDDEN (no placeholder box
+            // is rendered) until the Admin presses "Fulfill Buyer Request" —
+            // the only action that moves a buyer request out of 'pending' (to
+            // 'confirmed'). From that moment the map AND the digital Receipt
+            // become available. Chat Seller & Cancel Order remain the only
+            // actions while the request is still awaiting fulfillment.
+            const isBuyerMapUnlocked = userRole !== 'buyer' || order.status !== 'pending';
             const supplyItem = order.items[0];
             const orderFarmer =
               (currentUser?.role === 'farmer' && (
@@ -259,7 +288,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               (order.pickupSlot && !order.pickupSlot.includes('Supermarket') ? order.pickupSlot : '');
 
             const farmHouse =
-              isLiveTransaction && (orderFarmer || supplyItem || userRole === 'farmer')
+              isLiveTransaction && isBuyerMapUnlocked && (orderFarmer || supplyItem || userRole === 'farmer')
                 ? resolveFarmHouseCoordinates({
                     latitude: orderFarmer?.latitude || (userRole === 'farmer' ? currentUser?.latitude : undefined),
                     longitude: orderFarmer?.longitude || (userRole === 'farmer' ? currentUser?.longitude : undefined),
@@ -291,25 +320,35 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                 id={`order-card-${order.id}`}
                 className="bg-white border border-emerald-200/85 rounded-2xl p-4 space-y-3 shadow-xs"
               >
-                {/* Top Row: Order ID, Date & Status */}
-                <div className="flex items-center justify-between text-xs border-b border-emerald-100 pb-2.5">
-                  <div>
-                    <div className="flex items-center gap-1.5 font-bold text-emerald-950">
-                      <span>{order.id}</span>
-                      <span className="text-[10px] text-neutral-500 font-normal">({order.createdAt})</span>
+                {/* Collapsed summary header — tap to expand full details */}
+                <button
+                  onClick={() => toggleOrderExpanded(order.id)}
+                  className="w-full flex items-center gap-2 text-left cursor-pointer"
+                  aria-expanded={isOrderExpanded}
+                >
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="font-bold text-emerald-950 truncate">{order.id}</span>
+                      <span className="flex-shrink-0">{getStatusBadge(order.status)}</span>
                     </div>
-                    <div className="text-[11px] text-emerald-700 font-bold flex items-center gap-1 mt-0.5">
-                      <Store className="w-3.5 h-3.5 text-emerald-600" />
-                      {userRole === 'farmer'
-                        ? 'Customer: VeggieConnect Supermarket (Seller Procurement)'
-                        : userRole === 'buyer'
-                        ? 'Sold by: VeggieConnect Supermarket (Seller)'
-                        : `Produce: VeggieConnect Store • Buyer: ${order.buyerName}`}
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-neutral-500 truncate">
+                        {order.items[0]
+                          ? `${order.items[0].produceName} × ${order.items[0].quantity} ${order.items[0].unit || 'kg'}${order.items.length > 1 ? ` +${order.items.length - 1} more` : ''}`
+                          : 'View order details'}
+                      </span>
+                      <span className="font-black text-emerald-950 flex-shrink-0">
+                        ₱{(Number(order.totalAmount ?? order.subtotal) || 0).toFixed(2)}
+                      </span>
                     </div>
                   </div>
-                  <div>{getStatusBadge(order.status)}</div>
-                </div>
+                  <ChevronDown
+                    className={`w-4 h-4 text-emerald-700 transition-transform flex-shrink-0 ${isOrderExpanded ? 'rotate-180' : ''}`}
+                  />
+                </button>
 
+                {isOrderExpanded && (
+                <div className="space-y-3 pt-3 border-t border-emerald-100 mt-3">
                 {order.status === 'cancelled' ? (
                   <div className="bg-red-50/80 border border-red-200/90 rounded-xl p-3 text-xs space-y-1.5">
                     <div className="flex items-center justify-between font-bold">
@@ -334,7 +373,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     )}
                   </div>
                 ) : (
-                  /* Progress Step Bar — live farmer ↔ supermarket tracker.
+                  /* Progress bar — live farmer ↔ supermarket tracker.
                      Confirmed lights up ONLY after the owner starts the pickup
                      route ('I'll Pick This Up'), never right after Buy Produce. */
                   <div className="space-y-1.5 py-1">
@@ -405,8 +444,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   </div>
                 </div>
 
-                {/* LIVE ROUTE MAP: Farmer's House (Left) ➔ Supermarket Hub (Right) */}
-                {farmHouse && (
+                {/* LIVE ROUTE MAP: Farmer's House (Left) ➔ Supermarket Hub (Right).
+                    Buyers only see it AFTER Admin confirms the request — while
+                    pending, a locked-map notice is shown instead. */}
+                {farmHouse ? (
                   <div className="border border-red-200 bg-red-50/40 rounded-2xl overflow-hidden">
                     <div className="flex items-center justify-between gap-2 px-2.5 py-2 bg-gradient-to-r from-red-700 to-red-600 text-white">
                       <div className="flex items-center gap-1.5 min-w-0">
@@ -440,7 +481,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       }}
                     />
                   </div>
-                )}
+                ) : null}
 
                 {/* Bottom Actions */}
                 <div className="space-y-2 pt-1">
@@ -476,15 +517,18 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 
                   {/* Aligned Action Buttons Grid/Flex Row */}
                   <div className="flex flex-wrap items-center gap-2">
-                    {/* Digital Receipt Button */}
-                    <button
-                      id={`btn-receipt-${order.id}`}
-                      onClick={() => setSelectedReceiptOrder(order)}
-                      className="flex-1 min-w-[90px] h-10 px-2 sm:px-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-bold flex items-center justify-center gap-1.5 border border-emerald-200 cursor-pointer transition-all active:scale-95 shadow-xs"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-emerald-700 flex-shrink-0" />
-                      <span className="truncate">Receipt</span>
-                    </button>
+                    {/* Digital Receipt Button — buyers see it only AFTER the Admin
+                        fulfills the request (never while pending / cancelled). */}
+                    {(userRole !== 'buyer' || (order.status !== 'pending' && order.status !== 'cancelled')) && (
+                      <button
+                        id={`btn-receipt-${order.id}`}
+                        onClick={() => setSelectedReceiptOrder(order)}
+                        className="flex-1 min-w-[90px] h-10 px-2 sm:px-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-bold flex items-center justify-center gap-1.5 border border-emerald-200 cursor-pointer transition-all active:scale-95 shadow-xs"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-emerald-700 flex-shrink-0" />
+                        <span className="truncate">Receipt</span>
+                      </button>
+                    )}
 
                     {/* Chat with Farmer / Customer */}
                     {onChatWithParty && (() => {
@@ -590,6 +634,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     )}
                   </div>
                 </div>
+                </div>
+                )}
               </div>
             );
           })}

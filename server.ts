@@ -747,8 +747,18 @@ app.post('/api/auth/signup', async (req, res) => {
     // Securely hash password
     const hashedPassword = hashPassword(password || 'farmer1234');
 
+    // Respect the client-generated id when provided so the account identity is
+    // identical on both sides from the very first request. Crop listings,
+    // orders and chats reference this id — a client/server id mismatch used to
+    // orphan a farmer's own produce after they logged in again.
+    const requestedId = typeof req.body.id === 'string' ? req.body.id.trim() : '';
+    const idAlreadyTaken = requestedId
+      ? inMemoryUsers.some((u) => u.id === requestedId)
+      : false;
+    const userId = requestedId && !idAlreadyTaken ? requestedId : `user-${Date.now()}`;
+
     const newUser: any = {
-      id: `user-${Date.now()}`,
+      id: userId,
       name: trimmedName,
       email: rawEmail || `${trimmedName.toLowerCase().replace(/\s+/g, '')}@veggieconnect.ph`,
       phone: rawPhone || '+63 917 000 0000',
@@ -1439,8 +1449,128 @@ app.get('/api/orders', (req, res) => {
   res.json(inMemoryOrders);
 });
 
+// ── Request-lot warehouse deduction (shared helper) ────────────────────────
+// Deducts every REQUEST lot item (placeholder "req-prod-*" ids) of an order
+// from WAREHOUSE stock — the supermarket-owned records shown in the Stocks
+// menu — exactly once. Called when an order FIRST leaves 'pending' into any
+// active fulfillment status, from BOTH the order status endpoint and the
+// transport-haul sync (which mutates order status directly, bypassing the
+// order endpoint). Deduction floors at 0 and never rejects: blocking a
+// fire-and-forget completion would silently skip the deduction entirely and
+// leave the sold quantity permanently on the admin's Stocks menu.
+const FULFILLMENT_STATUSES = [
+  'confirmed',
+  'ready_for_pickup_delivery',
+  'picked_up',
+  'in_transit',
+  'completed',
+];
+
+const isRequestLotItem = (produceId: any) =>
+  !produceId || String(produceId).startsWith('req-prod-');
+
+function deductRequestLotsForOrder(order: any): boolean {
+  if (!order || (order as any).requestStockDeducted === true) return false;
+  const isWarehouseOwned = (p: any) =>
+    p.sellerStoreName === 'VeggieConnect Supermarket' ||
+    p.sellerStatus === 'bought_and_stocked' ||
+    p.farmName === 'VeggieConnect Supermarket' ||
+    p.farmerName === 'VeggieConnect Central Produce Hub' ||
+    p.farmerId === 'admin-main' ||
+    String(p.id || '').startsWith('sm-');
+  const cropNamesMatch = (productName: any, requested: string) => {
+    const a = String(productName || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+    const b = String(requested || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+    if (!a || !b) return false;
+    return a === b || a.includes(b) || b.includes(a);
+  };
+  // Warehouse-first target: highest-stock owned record matching the crop
+  // (the Stocks menu displays the largest matching record), then any
+  // exact-name record. A farmer's listing is never preferred over the
+  // warehouse stock the Admin fulfills from.
+  const findWarehouseProd = (name: string) =>
+    inMemoryProducts
+      .filter((p) => isWarehouseOwned(p) && cropNamesMatch(p.name, name))
+      .sort((a, b) => (Number(b.stockQuantity) || 0) - (Number(a.stockQuantity) || 0))[0] ||
+    inMemoryProducts.find((p) => (p.name || '').trim().toLowerCase() === name);
+
+  let deductedRequestLots = false;
+  for (const it of order.items || []) {
+    const pid = String(it.produceId || '');
+    if (pid && !pid.startsWith('req-prod-')) continue; // direct basket lot — deducted at checkout
+    const qty = Number(it.quantity) || 0;
+    if (qty <= 0) continue;
+    const name = String(it.produceName || '').trim().toLowerCase();
+    const prod = findWarehouseProd(name);
+    if (!prod) continue;
+    prod.stockQuantity = Math.max(0, (Number(prod.stockQuantity) || 0) - qty);
+    if (prod.stockQuantity === 0 && !prod.sellerStoreName) {
+      prod.sellerStatus = 'sold_out';
+    }
+    deductedRequestLots = true;
+    if (mysqlPool && isMysqlConnected) {
+      mysqlPool
+        .query(
+          'UPDATE products SET stock_quantity = GREATEST(0, stock_quantity - ?), seller_status = CASE WHEN stock_quantity = 0 AND seller_store_name IS NULL THEN "sold_out" ELSE seller_status END WHERE id = ?',
+          [qty, prod.id]
+        )
+        .catch((e) => console.log('MySQL fulfill deduct err:', e));
+    }
+  }
+  // Exactly-once guard: remember on the order that its request lots were
+  // deducted, so later transitions (confirmed → completed, etc.) never
+  // deduct the same quantity twice.
+  if (
+    deductedRequestLots ||
+    (order.items || []).some((it: any) => isRequestLotItem(it?.produceId))
+  ) {
+    (order as any).requestStockDeducted = true;
+  }
+  return deductedRequestLots;
+}
+
 app.post('/api/orders', (req, res) => {
   const order = req.body;
+
+  // ── Stock Validation (overselling guard) ──────────────────────────────────
+  // Every ordered item that matches a known product (by id or crop name) must
+  // fit within its available shelf stock. Admin procurement orders (TX-ADM-*)
+  // are skipped — they ADD warehouse stock rather than consume it. Items with
+  // no matching product are custom buyer sourcing requests (Admin decides).
+  const isAdminProcurement =
+    String(order.id || '').startsWith('TX-ADM-') ||
+    order.buyerId === 'admin-main' ||
+    String(order.buyerName || '').toLowerCase().includes('admin');
+  if (!isAdminProcurement && Array.isArray(order.items)) {
+    const problems: string[] = [];
+    for (const it of order.items) {
+      const qty = Number(it.quantity) || 0;
+      if (qty <= 0) continue;
+      const name = String(it.produceName || '').trim().toLowerCase();
+      const prod =
+        inMemoryProducts.find((p) => p.id === it.produceId) ||
+        inMemoryProducts.find((p) => (p.name || '').trim().toLowerCase() === name) ||
+        (name.length > 0
+          ? inMemoryProducts.find(
+              (p) =>
+                ((p.name || '').toLowerCase().includes(name) || name.includes((p.name || '').toLowerCase())) &&
+                (p.name || '').length > 0
+            )
+          : undefined);
+      if (!prod) continue;
+      const stock = Number(prod.stockQuantity) || 0;
+      if (qty > stock) {
+        problems.push(`${it.produceName}: requested ${qty}${it.unit || 'kg'} but only ${stock}${prod.unit || 'kg'} on the shelf`);
+      }
+    }
+    if (problems.length > 0) {
+      return res.status(409).json({
+        code: 'INSUFFICIENT_STOCK',
+        error: `Request blocked — ${problems.join(' | ')}`,
+      });
+    }
+  }
+
   inMemoryOrders.unshift(order);
   void saveOrderToMysql(order);
 
@@ -1505,10 +1635,48 @@ app.put('/api/orders/:id', async (req, res) => {
 
   const previousStatus = order.status;
 
+  // ── Fulfillment stock deduction ───────────────────────────────────────────
+  // When an order FIRST leaves 'pending' into ANY active fulfillment status
+  // (confirmed / ready_for_pickup_delivery / picked_up / in_transit / completed),
+  // every REQUEST lot item (placeholder "req-prod-*" ids) is deducted from
+  // WAREHOUSE stock — the supermarket-owned records shown in the Stocks menu —
+  // exactly once (guarded by the order's requestStockDeducted flag).
+  //
+  // WHY ANY STATUS: orders can be completed through several desks (Fulfill
+  // Buyer Request → confirmed, "Mark Delivered", receipt "Mark Order as
+  // Completed", transport-haul delivery). Previously ONLY the 'confirmed'
+  // transition deducted, so completing an order through any other desk left
+  // the sold quantity permanently on the admin's Stocks menu.
+  //
+  // Direct basket lots (real produce ids) are skipped: their stock was already
+  // deducted by POST /api/orders at checkout, and fulfillment must never
+  // deduct them twice. The Admin client mirrors the deduction visually only
+  // (no product PUT) so exactly one deduction is ever persisted.
+  const isFirstFulfillmentTransition =
+    FULFILLMENT_STATUSES.includes(updates.status) &&
+    previousStatus !== 'cancelled' &&
+    (order as any).requestStockDeducted !== true &&
+    (previousStatus === 'pending' || previousStatus === undefined);
+  if (isFirstFulfillmentTransition) {
+    deductRequestLotsForOrder(order);
+  }
+
   // Handle Order Cancellation & Automatic Stock Restock
   if (updates.status === 'cancelled' && previousStatus !== 'cancelled') {
     const items = order.items || [];
     let totalRestockedKg = 0;
+
+    // Restock each item into exactly ONE record — the WAREHOUSE record the
+    // Stocks menu displays (supermarket-owned), so a farmer's similarly named
+    // listing never receives the returned stock. Real produce ids (direct
+    // basket lots) keep their exact-id match first.
+    const isWarehouseOwned = (p: any) =>
+      p.sellerStoreName === 'VeggieConnect Supermarket' ||
+      p.sellerStatus === 'bought_and_stocked' ||
+      p.farmName === 'VeggieConnect Supermarket' ||
+      p.farmerName === 'VeggieConnect Central Produce Hub' ||
+      p.farmerId === 'admin-main' ||
+      String(p.id || '').startsWith('sm-');
 
     for (const item of items) {
       const prodId = item.produceId;
@@ -1516,25 +1684,44 @@ app.put('/api/orders/:id', async (req, res) => {
       const qty = Number(item.quantity) || 0;
       if (qty <= 0) continue;
 
-      totalRestockedKg += qty;
+      // Only return stock that was actually taken off the shelf:
+      //  • Direct basket lots (real produce ids) were deducted at checkout →
+      //    always restock.
+      //  • REQUEST lots (placeholder "req-prod-*" ids) were deducted ONLY when
+      //    the order left 'pending' (fulfilled). Cancelling a still-pending
+      //    request must NOT restock — nothing was ever deducted, and doing so
+      //    would create phantom stock on the admin's Stocks menu.
+      const isRequestLot = isRequestLotItem(prodId);
+      const wasFulfilled =
+        (order as any).requestStockDeducted === true ||
+        (previousStatus !== 'pending' && previousStatus !== 'cancelled');
+      if (isRequestLot && !wasFulfilled) continue;
 
-      // Restock in inMemoryProducts
-      const matchedProd = inMemoryProducts.find(
-        (p) => p.id === prodId || (p.name && p.name.trim().toLowerCase() === prodName)
-      );
+      // Restock in inMemoryProducts — exact id first, then the highest-stock
+      // warehouse record matching the crop name, then any exact-name record.
+      const matchedProd =
+        inMemoryProducts.find((p) => prodId && p.id === prodId) ||
+        inMemoryProducts
+          .filter((p) => isWarehouseOwned(p) && p.name && p.name.trim().toLowerCase() === prodName)
+          .sort((a, b) => (Number(b.stockQuantity) || 0) - (Number(a.stockQuantity) || 0))[0] ||
+        inMemoryProducts.find((p) => p.name && p.name.trim().toLowerCase() === prodName);
       if (matchedProd) {
+        totalRestockedKg += qty;
         matchedProd.stockQuantity = (Number(matchedProd.stockQuantity) || 0) + qty;
         if (matchedProd.sellerStatus === 'sold_out') {
           matchedProd.sellerStatus = 'bought_and_stocked';
         }
       }
 
-      // If connected to XAMPP MySQL, update database table
-      if (isMysqlConnected && mysqlPool && prodId) {
+      // If connected to XAMPP MySQL, update database table (by the MATCHED
+      // record's id — placeholder "req-prod-*" request ids match no row, so
+      // the name-matched warehouse record is used instead).
+      const restockRowId = matchedProd ? matchedProd.id : prodId;
+      if (isMysqlConnected && mysqlPool && restockRowId) {
         try {
           await mysqlPool.query(
             'UPDATE products SET stock_quantity = stock_quantity + ?, seller_status = CASE WHEN seller_status = "sold_out" THEN "bought_and_stocked" ELSE seller_status END WHERE id = ?',
-            [qty, prodId]
+            [qty, restockRowId]
           );
         } catch (dbErr: any) {
           console.log('[MySQL Restock Notice]:', dbErr.message);
@@ -1651,10 +1838,23 @@ app.put('/api/transport-jobs/:id', async (req, res) => {
     if (assignedTransporterId) matchedOrder.transporterId = assignedTransporterId;
     if (assignedTransporterName) matchedOrder.transporterName = assignedTransporterName;
 
+    const previousOrderStatus = matchedOrder.status;
     if (status === 'accepted' || status === 'picked_up' || status === 'in_transit') {
       matchedOrder.status = 'in_transit';
     } else if (status === 'delivered') {
       matchedOrder.status = 'completed';
+    }
+
+    // The haul sync mutates the order status directly (bypassing PUT
+    // /api/orders/:id), so the request-lot warehouse deduction must run here
+    // too: when the order FIRST leaves 'pending' into an active fulfillment
+    // status, deduct its request lots exactly once.
+    if (
+      matchedOrder.status !== previousOrderStatus &&
+      FULFILLMENT_STATUSES.includes(matchedOrder.status) &&
+      (previousOrderStatus === 'pending' || previousOrderStatus === undefined)
+    ) {
+      deductRequestLotsForOrder(matchedOrder);
     }
     void saveOrderToMysql(matchedOrder);
   }

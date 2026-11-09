@@ -251,7 +251,7 @@ export const ProjectGuideModal: React.FC<ProjectGuideModalProps> = ({
                 </div>
                 <div className="space-y-1 text-[11px] text-neutral-600">
                   <p><strong>Who:</strong> A regular Buyer (household or restaurant).</p>
-                  <p><strong>Steps:</strong> Buyer adds vegetables to Cart → Checks out → Chooses Home Delivery or Farm Pickup → The admin picks up and delivers.</p>
+                  <p><strong>Flow:</strong> Buyer adds vegetables to Cart → Checks out → Chooses Home Delivery or Farm Pickup → The admin picks up and delivers.</p>
                   <p><strong>Result:</strong> The buyer receives and consumes the vegetables.</p>
                 </div>
               </div>
@@ -268,7 +268,7 @@ export const ProjectGuideModal: React.FC<ProjectGuideModalProps> = ({
                 </div>
                 <div className="space-y-1 text-[11px] text-neutral-600">
                   <p><strong>Who:</strong> The Admin (Supermarket Store Desk).</p>
-                  <p><strong>Steps:</strong> Admin clicks "Buy from Farmer" in the crops list → Buys bulk harvest (e.g. 50kg @ ₱35/kg) → Produce goes to "Owned / Bought" → Admin clicks "Put in Stock" and sets retail price (e.g. ₱50/kg) → Vegetable appears on the Supermarket Shelf for buyers to order!</p>
+                  <p><strong>Flow:</strong> Admin clicks "Buy from Farmer" in the crops list → Buys bulk harvest (e.g. 50kg @ ₱35/kg) → Produce goes to "Owned / Bought" → Admin clicks "Put in Stock" and sets retail price (e.g. ₱50/kg) → Vegetable appears on the Supermarket Shelf for buyers to order!</p>
                   <p><strong>Result:</strong> The farmer gets paid in bulk immediately, and the Admin earns retail markup profit.</p>
                 </div>
               </div>

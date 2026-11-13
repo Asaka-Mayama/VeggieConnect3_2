@@ -11,7 +11,9 @@ const app = express();
 const PORT = 3000;
 
 app.use(cors());
-app.use(express.json());
+// Chat photos travel inside the message JSON as compressed JPEG data URLs,
+// so the body parser accepts multi-hundred-KB payloads.
+app.use(express.json({ limit: '10mb' }));
 
 // --- Secrets / switches that come from .env (never hardcode these) ---
 // ADMIN_PASSWORD: password for admin@gmail.com. Defaults to 'admin123' if not set in environment.

@@ -728,7 +728,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 
       {/* Order Cancellation & Restock Confirmation Modal */}
       {orderToCancel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+        <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
           <div className="bg-white border border-red-200 rounded-3xl w-full max-w-sm max-h-[92%] overflow-y-auto p-5 space-y-4 text-neutral-900 shadow-2xl relative">
             <button
               onClick={() => {

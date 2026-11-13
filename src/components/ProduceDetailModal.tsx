@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { ProduceItem, FarmerProfile, UserProfile } from '../types';
 import { getBuyerOriginLabel, isStockedToday } from './ProduceCard';
+import { withAdminCommission } from '../utils/pricing';
 
 interface ProduceDetailModalProps {
   produce: ProduceItem;
@@ -69,7 +70,10 @@ export const ProduceDetailModal: React.FC<ProduceDetailModalProps> = ({
         (u.farmName && produce.farmName && u.farmName.toLowerCase() === produce.farmName.toLowerCase())
     );
 
-  const rawPrice = typeof produce.pricePerUnit === 'number' ? produce.pricePerUnit : parseFloat(produce.pricePerUnit as any) || 0;
+  const farmerPrice = typeof produce.pricePerUnit === 'number' ? produce.pricePerUnit : parseFloat(produce.pricePerUnit as any) || 0;
+  // Buyer-facing per-kg price = farmer asking price + Admin per-kg commission.
+  // Farmers/admin keep the raw asking price.
+  const rawPrice = isBuyer ? withAdminCommission(farmerPrice) : farmerPrice;
 
   // Bulk discount calculation
   const bulkDiscountActive =

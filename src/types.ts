@@ -112,6 +112,8 @@ export interface OrderItem {
   produceName: string;
   pricePerUnit?: number;
   unitPrice?: number;
+  /** Farmer's original asking price per unit (before Admin commission). */
+  farmgateUnitPrice?: number;
   unit: string;
   quantity: number;
   farmerId?: string;
@@ -142,6 +144,8 @@ export interface Order {
   brokerHubName?: string; // backward compat alias
   farmgateCostTotal?: number;
   sellerMargin?: number;
+  /** Admin per-kg commission (10%) collected on this order's items. */
+  adminCommissionTotal?: number;
   items: OrderItem[];
   deliveryType: 'farm_pickup' | 'direct_delivery';
   deliveryAddress?: string;
@@ -201,6 +205,9 @@ export interface DirectMessage {
   produceName?: string;
   orderId?: string;
   isRead?: boolean;
+  // Photo attachment (client-compressed JPEG data URL). Messages can be
+  // photo-only (text '') or carry a caption alongside the image.
+  imageUrl?: string;
   // Legacy backward-compatibility fields
   farmerId?: string;
   farmerName?: string;

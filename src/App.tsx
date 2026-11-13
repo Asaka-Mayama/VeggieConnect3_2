@@ -261,6 +261,14 @@ export default function App() {
       setActiveTab('farmer-portal');
       return;
     }
+    // STRAIGHT TO THE ADMIN DESK: buyers and farmers can only chat with the
+    // VeggieConnect admin (the Seller) inside Direct Chat, so opening the tab
+    // jumps directly into that conversation — no extra contact tap needed.
+    if (tab === 'messages' && userRole !== 'admin') {
+      setActiveChatPartner(SELLER_CONTACT);
+      setIsChatBoxOpen(true);
+      setIsChatMinimized(false);
+    }
     setActiveTab(tab);
   };
 
@@ -783,6 +791,54 @@ export default function App() {
                 }
               }
               return enriched;
+            });
+          }
+        }
+
+        // LIVE DIRECT CHAT SYNC: messages MUST be polled together with the
+        // other collections. Without this, a reply sent by the admin desk (or
+        // a message from a user) never shows up until the page is reloaded —
+        // which made the Direct Chat feature appear broken.
+        const pollMsgRes = await fetch('/api/messages');
+        if (pollMsgRes.ok) {
+          const remoteMsgs = await pollMsgRes.json();
+          if (Array.isArray(remoteMsgs)) {
+            setMessages((currentMsgs) => {
+              // Preserve locally-known read state (server keeps it too, but
+              // offline tabs may have marked messages read first).
+              const readIds = new Set<string>();
+              (currentMsgs || []).forEach((m) => {
+                if (m && m.isRead && m.id) readIds.add(m.id);
+              });
+              try {
+                const saved = localStorage.getItem(STORAGE_KEYS.MESSAGES);
+                if (saved) {
+                  const parsed = JSON.parse(saved);
+                  if (Array.isArray(parsed)) {
+                    parsed.forEach((m: any) => {
+                      if (m && m.isRead && m.id) readIds.add(m.id);
+                    });
+                  }
+                }
+              } catch (e) {}
+
+              const remoteById = new Map<string, DirectMessage>();
+              (remoteMsgs as DirectMessage[]).forEach((m: any) => {
+                if (m && m.id) remoteById.set(m.id, readIds.has(m.id) ? { ...m, isRead: true } : m);
+              });
+
+              // Union: keep locally-only messages (optimistic/offline sends)
+              const localOnly = (currentMsgs || []).filter(
+                (m) => m && m.id && !remoteById.has(m.id)
+              );
+              const merged = [...localOnly, ...Array.from(remoteById.values())];
+              merged.sort((a, b) => {
+                const ta = Number(String(a?.id || '').replace('msg-', '')) || 0;
+                const tb = Number(String(b?.id || '').replace('msg-', '')) || 0;
+                return ta - tb;
+              });
+              localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(merged));
+              return merged;
             });
           }
         }
@@ -2531,7 +2587,9 @@ export default function App() {
   }, [activeChatPartner, currentUser, userRole]);
 
   // Direct Message Sending
-  const handleSendMessage = (text: string, partner: ChatContact) => {
+  const handleSendMessage = (text: string, partner: ChatContact, imageUrl?: string) => {
+    // Allow photo-only messages (empty text + image) — reject truly empty sends.
+    if (!text.trim() && !imageUrl) return;
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
     const minutes = now.getMinutes().toString().padStart(2, '0');
@@ -2548,9 +2606,10 @@ export default function App() {
       recipientId: partner.id,
       recipientName: partner.name,
       recipientRole: partner.role,
-      text,
+      text: text.trim(),
       timestamp,
       isRead: false,
+      imageUrl: imageUrl || undefined,
       produceName: partner.produceContext,
       orderId: partner.orderId,
       farmerId: userRole === 'farmer' ? senderId : partner.id,
@@ -2837,7 +2896,7 @@ export default function App() {
           isLoggedIn={false}
         >
           {toastMessage && (
-            <div className="fixed top-12 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white font-bold px-4 py-2 rounded-full text-xs shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-top-3 duration-200">
+            <div className="absolute top-12 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white font-bold px-4 py-2 rounded-full text-xs shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-top-3 duration-200">
               <CheckCircle className="w-4 h-4 text-emerald-200" />
               <span>{toastMessage}</span>
             </div>
@@ -2898,7 +2957,7 @@ export default function App() {
 
         {/* Toast Notification Pill */}
         {toastMessage && (
-          <div className="fixed top-12 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white font-bold px-4 py-2 rounded-full text-xs shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-top-3 duration-200">
+          <div className="absolute top-12 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white font-bold px-4 py-2 rounded-full text-xs shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-top-3 duration-200">
             <CheckCircle className="w-4 h-4 text-emerald-200" />
             <span>{toastMessage}</span>
           </div>
@@ -2907,8 +2966,6 @@ export default function App() {
         {/* Main Header with Dumaguete, Auth, and Logout */}
         <Header
           userRole={userRole}
-          activeLocation={currentLocation}
-          onLocationClick={() => setShowLocationModal(true)}
           onNotificationClick={() => showToast('Fresh harvest routes active across Dumaguete & Valencia!')}
           onOpenPriceWatch={() => {
             setGlobalPriceWatchSearch('');

@@ -17,6 +17,7 @@ import {
 import { ProduceItem, HarvestStatus, Order, OrderItem, UserProfile } from '../types';
 import { ProduceCard } from './ProduceCard';
 import { DA_DAILY_PRICES } from '../data/daPricesData';
+import { buyerUnitPrice, farmerUnitPrice } from '../utils/pricing';
 
 interface BuyerMarketViewProps {
   produceList: ProduceItem[];
@@ -60,7 +61,7 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
   // Product-specific request context: when the buyer taps "Request" on a market
   // card (or inside the produce detail modal), the request modal opens pre-filled
   // with THAT crop. availableStock caps the requested quantity.
-  const [requestProductInfo, setRequestProductInfo] = useState<{ name: string; availableStock: number; unit: string } | null>(null);
+  const [requestProductInfo, setRequestProductInfo] = useState<{ name: string; availableStock: number; unit: string; farmgateUnitPrice?: number } | null>(null);
 
   // ── Stock-aware request validation ─────────────────────────────────────
   // Any requested item that matches a crop currently listed on the Market is
@@ -135,8 +136,9 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
         return true;
       })
       .sort((a, b) => {
-        const priceA = typeof a.pricePerUnit === 'number' ? a.pricePerUnit : parseFloat(a.pricePerUnit as any) || 0;
-        const priceB = typeof b.pricePerUnit === 'number' ? b.pricePerUnit : parseFloat(b.pricePerUnit as any) || 0;
+        // Price sorting uses the buyer market price (farmer price + Admin commission)
+        const priceA = buyerUnitPrice(a);
+        const priceB = buyerUnitPrice(b);
         if (sortBy === 'price_low') {
           return priceA - priceB;
         }
@@ -177,10 +179,9 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
       typeof produce.stockQuantity === 'number'
         ? produce.stockQuantity
         : parseInt(String(produce.stockQuantity), 10) || 0;
-    const price =
-      typeof produce.pricePerUnit === 'number'
-        ? produce.pricePerUnit
-        : parseFloat(String(produce.pricePerUnit)) || 0;
+    // The estimated price follows the buyer market price: farmer asking price
+    // plus the Admin's per-kg commission.
+    const price = buyerUnitPrice(produce);
     const unit = produce.unit || 'kg';
 
     const initialQty = Math.min(
@@ -191,7 +192,14 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
     setRequestVegetables([
       { name: produce.name, quantity: initialQty, unit, estimatedPrice: price },
     ]);
-    setRequestProductInfo({ name: produce.name, availableStock: stock, unit });
+    setRequestProductInfo({
+      name: produce.name,
+      availableStock: stock,
+      unit,
+      // Farmer's original asking price (market price above already carries the
+      // Admin's per-kg commission) so the request records the commission split.
+      farmgateUnitPrice: farmerUnitPrice(produce),
+    });
     setSelectedPresetCrop('');
     setCustomCropName('');
     setCustomCropQty(5);
@@ -352,19 +360,31 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
     setIsSubmittingRequest(true);
 
     const isProductRequest = Boolean(requestProductInfo);
-    const orderItems: OrderItem[] = requestVegetables.map((v, i) => ({
-      produceId: `req-prod-${Date.now()}-${i}`,
-      produceName: v.name,
-      imageUrl: 'https://images.unsplash.com/photo-1540420773420-3366772f4999?auto=format&fit=crop&w=600&q=80',
-      unitPrice: v.estimatedPrice,
-      pricePerUnit: v.estimatedPrice,
-      unit: v.unit,
-      quantity: v.quantity,
-      farmName: 'VeggieConnect Central Market',
-      farmerId: 'admin-main',
-    }));
+    const orderItems: OrderItem[] = requestVegetables.map((v, i) => {
+      // Product-specific lots record the farmer's asking price so the Admin
+      // commission (market price − farmgate price) is tracked per kg.
+      const isProductLot =
+        requestProductInfo &&
+        requestProductInfo.farmgateUnitPrice !== undefined &&
+        v.name.toLowerCase() === requestProductInfo.name.toLowerCase();
+      return {
+        produceId: `req-prod-${Date.now()}-${i}`,
+        produceName: v.name,
+        imageUrl: 'https://images.unsplash.com/photo-1540420773420-3366772f4999?auto=format&fit=crop&w=600&q=80',
+        unitPrice: v.estimatedPrice,
+        pricePerUnit: v.estimatedPrice,
+        farmgateUnitPrice: isProductLot ? requestProductInfo!.farmgateUnitPrice : undefined,
+        unit: v.unit,
+        quantity: v.quantity,
+        farmName: 'VeggieConnect Central Market',
+        farmerId: 'admin-main',
+      };
+    });
 
+    // Commission split for product lots with a known farmgate price.
     const totalAmt = requestVegetables.reduce((sum, v) => sum + v.quantity * v.estimatedPrice, 0);
+    const farmgateCostTotal = Math.round(orderItems.reduce((s, it) => s + (it.farmgateUnitPrice || 0) * (it.quantity || 0), 0) * 100) / 100;
+    const adminCommissionTotal = farmgateCostTotal > 0 ? Math.round((totalAmt - farmgateCostTotal) * 100) / 100 : undefined;
 
     const newRequestOrder: Order = {
       id: `VC-REQ-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -379,6 +399,8 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
       subtotal: totalAmt,
       deliveryFee: 0,
       totalAmount: totalAmt,
+      farmgateCostTotal: farmgateCostTotal > 0 ? farmgateCostTotal : undefined,
+      adminCommissionTotal,
       status: 'pending', // Buyer request submitted, awaits Admin processing
       createdAt: new Date().toISOString(),
       farmerId: 'admin-main',
@@ -581,10 +603,13 @@ export const BuyerMarketView: React.FC<BuyerMarketViewProps> = ({
         </div>
       )}
 
-      {/* SUBMIT VEGETABLE PURCHASE REQUEST MODAL */}
+            {/* SUBMIT VEGETABLE PURCHASE REQUEST MODAL
+          `absolute` (not `fixed`) anchors the overlay to the phone shell so the
+          request form always fits INSIDE the app frame — it can never spill
+          over the app's size; long content scrolls within the sheet itself. */}
       {showRequestModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-md w-full max-h-[92%] overflow-y-auto shadow-2xl border border-emerald-200 p-5 space-y-4 text-emerald-950">
+        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-md w-full max-h-full overflow-y-auto shadow-2xl border border-emerald-200 p-5 space-y-4 text-emerald-950">
             {/* Modal Header */}
             <div className="flex items-start justify-between border-b border-neutral-100 pb-3">
               <div className="flex items-center gap-2">

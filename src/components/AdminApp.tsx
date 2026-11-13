@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import {
   Shield,
   Users,
@@ -58,9 +58,12 @@ import {
   PackageCheck,
   User,
   Navigation,
+  Image as ImageIcon,
+  Smile,
 } from 'lucide-react';
 import { UserProfile, ProduceItem, Order, TransportJob, DirectMessage, DAPriceItem, DABulletinMeta } from '../types';
 import { appSync } from '../utils/appSync';
+import { CHAT_EMOJIS, chatPhotoPreviewText, fileToChatPhotoDataUrl } from '../utils/chatImage';
 import { ThemeToggleButton } from './ThemeToggleButton';
 import { DA_DAILY_PRICES, DA_BULLETIN_METADATA, findMatchingDAPrice } from '../data/daPricesData';
 import { generateVeggieConnect3Sql } from '../data/xamppSqlData';
@@ -119,7 +122,7 @@ interface AdminAppProps {
   orders: Order[];
   transportJobs: TransportJob[];
   messages?: DirectMessage[];
-  onSendMessage?: (text: string, partner: any) => void;
+  onSendMessage?: (text: string, partner: any, imageUrl?: string) => void;
   onUpdateUser: (user: UserProfile) => void;
   onDeleteUser: (userId: string) => void;
   onUpdateProduce: (produce: ProduceItem) => void;
@@ -390,6 +393,12 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   // Chat Farmer State
   const [chattingProduce, setChattingProduce] = useState<ProduceItem | null>(null);
   const [farmerChatText, setFarmerChatText] = useState('');
+  const [showFarmerEmojiPicker, setShowFarmerEmojiPicker] = useState(false);
+  const [isSendingFarmerPhoto, setIsSendingFarmerPhoto] = useState(false);
+  const farmerPhotoInputRef = useRef<HTMLInputElement>(null);
+  const farmerChatScrollRef = useRef<HTMLDivElement>(null);
+  // ALL MESSAGES quick view inside the Users menu
+  const [showAllMessages, setShowAllMessages] = useState(false);
   const [localAdminMessages, setLocalAdminMessages] = useState<DirectMessage[]>(messages || []);
 
   useEffect(() => {
@@ -403,10 +412,15 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     const directUserId = chattingProduce.id.startsWith('user-chat-')
       ? chattingProduce.id.replace('user-chat-', '')
       : null;
+    // Direct user channels (Users menu / All Messages) MUST resolve to the
+    // exact account — never fall through to the admin row (farmerId is
+    // 'admin-main' on buyer channels and .find() could match it first).
+    if (directUserId) {
+      return registeredUsers.find((u) => u.id === directUserId) || null;
+    }
     return (
       registeredUsers.find(
         (u) =>
-          (directUserId && u.id === directUserId) ||
           u.id === chattingProduce.farmerId ||
           (u.name && chattingProduce.farmerName && u.name.trim().toLowerCase() === chattingProduce.farmerName.trim().toLowerCase())
       ) || null
@@ -442,9 +456,132 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     });
   }, [chattingProduce, localAdminMessages]);
 
+  // Keep the admin chat pinned to the newest message (like the community chat).
+  // Photos load async and grow the scroll height afterwards, so re-pin shortly
+  // after the message batch renders and whenever an image finishes loading.
+  const pinFarmerChatToBottom = () => {
+    if (farmerChatScrollRef.current) {
+      farmerChatScrollRef.current.scrollTop = farmerChatScrollRef.current.scrollHeight;
+    }
+  };
+  useEffect(() => {
+    pinFarmerChatToBottom();
+    const t1 = setTimeout(pinFarmerChatToBottom, 250);
+    const t2 = setTimeout(pinFarmerChatToBottom, 900);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [chattingProduce, farmerConversation.length]);
+
+  // ALL MESSAGES: one summary per registered user (latest message + unread count)
+  const adminUserChatSummaries = useMemo(() => {
+    // The admin desk itself is never a chat target — only farmers and buyers
+    const summaries = registeredUsers
+      .filter((u) => u.role !== 'admin')
+      .map((u) => {
+      const normName = u.name?.trim().toLowerCase() || '';
+      const conv = localAdminMessages.filter((m) => {
+        if (!m) return false;
+        const byId =
+          m.senderId === u.id ||
+          m.recipientId === u.id ||
+          m.buyerId === u.id ||
+          (u.role === 'farmer' && m.farmerId === u.id);
+        const byName =
+          (!!normName && m.senderName?.trim().toLowerCase() === normName) ||
+          (!!normName && m.recipientName?.trim().toLowerCase() === normName);
+        return byId || byName;
+      });
+      // Newest last (ids are msg-<timestamp>) so the preview is the true latest
+      const sorted = [...conv].sort((a, b) => {
+        const ta = Number(String(a?.id || '').replace('msg-', '')) || 0;
+        const tb = Number(String(b?.id || '').replace('msg-', '')) || 0;
+        return ta - tb;
+      });
+      const last = sorted.length ? sorted[sorted.length - 1] : null;
+      const unread = sorted.filter((m) => !m.isRead && m.senderRole !== 'admin').length;
+      return { user: u, last, unread, count: sorted.length };
+      });
+    // Users with the newest conversations first, then most messages, then name
+    return summaries.sort((a, b) => {
+      const ta = Number(String(a.last?.id || '').replace('msg-', '')) || 0;
+      const tb = Number(String(b.last?.id || '').replace('msg-', '')) || 0;
+      if (ta !== tb) return tb - ta;
+      if ((b.count || 0) !== (a.count || 0)) return (b.count || 0) - (a.count || 0);
+      return (a.user.name || '').localeCompare(b.user.name || '');
+    });
+  }, [registeredUsers, localAdminMessages]);
+
+  // Total unread messages addressed to the admin desk
+  const adminUnreadTotal = useMemo(
+    () => localAdminMessages.filter((m) => m && m.senderRole !== 'admin' && !m.isRead).length,
+    [localAdminMessages]
+  );
+
+  // Open the direct chat channel with a user from the All Messages list
+  const handleOpenUserChatById = (userId: string) => {
+    const u = registeredUsers.find((x) => x.id === userId);
+    if (!u) return;
+    const isFarmer = u.role === 'farmer';
+    const userProduceRef: ProduceItem = {
+      id: `user-chat-${u.id}`,
+      farmerId: isFarmer ? u.id : 'admin-main',
+      farmerName: isFarmer ? u.name : 'VeggieConnect Support',
+      farmName: isFarmer ? (u.farmName || 'Local Farm') : 'VeggieConnect Central Hub',
+      name: `Direct Support & Chat (${u.name})`,
+      category: 'Vegetables',
+      pricePerUnit: 0,
+      farmgateAskingPrice: 0,
+      unit: 'unit',
+      stockQuantity: 100,
+      minOrderQuantity: 1,
+      harvestStatus: 'Harvested Today',
+      harvestDate: 'Today',
+      farmingMethod: 'Standard',
+      imageUrl: u.avatar || '',
+      isOrganic: true,
+      description: `Chat channel with ${u.name} (${u.role})`,
+      location: u.location || 'Dumaguete City',
+      distanceKm: 0,
+      rating: 5.0,
+      reviewsCount: 1,
+    };
+    handleOpenFarmerChat(userProduceRef);
+  };
+
+  // Opening a conversation marks that user's incoming messages as READ
+  // (locally + on the server) so the All Messages unread badges stay accurate.
+  useEffect(() => {
+    if (!chattingProduce) return;
+    const directUserId = chattingProduce.id.startsWith('user-chat-')
+      ? chattingProduce.id.replace('user-chat-', '')
+      : null;
+    const partnerId = directUserId || chattingProduce.farmerId;
+    if (!partnerId) return;
+    let changed = false;
+    const updated = localAdminMessages.map((m) => {
+      if (m && !m.isRead && m.senderRole !== 'admin' && m.senderId === partnerId) {
+        changed = true;
+        return { ...m, isRead: true };
+      }
+      return m;
+    });
+    if (changed) {
+      setLocalAdminMessages(updated);
+      fetch('/api/messages/mark-read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser?.id || 'admin-main', partnerId }),
+      }).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chattingProduce, localAdminMessages]);
+
   const handleOpenFarmerChat = (produce: ProduceItem) => {
     setChattingProduce(produce);
     setFarmerChatText('');
+    setShowFarmerEmojiPicker(false);
   };
 
   const handleOpenFarmerChatForOrder = (tx: {
@@ -497,11 +634,12 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
     setChattingProduce(orderRefProduce);
     setFarmerChatText('');
+    setShowFarmerEmojiPicker(false);
   };
 
-  const handleSendFarmerMessage = (presetText?: string) => {
+  const handleSendFarmerMessage = (presetText?: string, imageUrl?: string) => {
     const textToSend = (presetText || farmerChatText).trim();
-    if (!textToSend || !chattingProduce) return;
+    if ((!textToSend && !imageUrl) || !chattingProduce) return;
 
     const directUserId = chattingProduce.id.startsWith('user-chat-')
       ? chattingProduce.id.replace('user-chat-', '')
@@ -527,6 +665,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
       text: textToSend,
       timestamp,
       isRead: false,
+      imageUrl: imageUrl || undefined,
       produceName: chattingProduce.name,
       farmerId: recipientRole === 'farmer' ? recipientId : (chattingProduce.farmerId || 'admin-main'),
       farmerName: recipientRole === 'farmer' ? recipientName : (chattingProduce.farmerName || 'VeggieConnect Support'),
@@ -536,6 +675,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
     setLocalAdminMessages((prev) => [...prev, newMsg]);
     setFarmerChatText('');
+    setShowFarmerEmojiPicker(false);
 
     if (onSendMessage) {
       onSendMessage(textToSend, {
@@ -544,7 +684,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
         role: recipientRole,
         farmName: targetUser?.farmName || chattingProduce.farmName,
         produceContext: chattingProduce.name,
-      });
+      }, imageUrl);
     } else {
       fetch('/api/messages', {
         method: 'POST',
@@ -555,6 +695,23 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
     appSync.publish('MESSAGES_UPDATED', newMsg, 'admin');
     showToast(`Message sent to ${recipientName}!`);
+  };
+
+  // Photo attachment for the admin desk chat: compress and send immediately
+  const handleFarmerPhotoPicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-picking the same photo later
+    if (!file || !chattingProduce) return;
+    setIsSendingFarmerPhoto(true);
+    try {
+      const dataUrl = await fileToChatPhotoDataUrl(file);
+      handleSendFarmerMessage('', dataUrl);
+    } catch (err: any) {
+      console.log('Photo attach failed:', err?.message || err);
+      showToast(err?.message || 'Could not attach that photo.');
+    } finally {
+      setIsSendingFarmerPhoto(false);
+    }
   };
 
   // Modal / Editing states
@@ -1949,16 +2106,16 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
   return (
     <div className="min-h-screen bg-neutral-100 text-neutral-900 flex flex-col items-center justify-center p-0 sm:p-4 selection:bg-emerald-600 selection:text-white">
-      {/* Toast Notification */}
-      {toastMsg && (
-        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-emerald-700 text-white font-bold px-4 py-2 rounded-full text-xs shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-top-3">
-          <CheckCircle2 className="w-4 h-4 text-emerald-200" />
-          <span>{toastMsg}</span>
-        </div>
-      )}
-
       {/* Pure Mobile App Shell */}
-      <div className="w-full max-w-[430px] min-h-screen sm:min-h-[860px] sm:max-h-[920px] bg-white sm:rounded-[44px] sm:border-[10px] sm:border-neutral-800/10 sm:shadow-[0_20px_50px_rgba(0,0,0,0.12)] relative flex flex-col overflow-hidden">
+      <div className="w-full max-w-[430px] h-[100dvh] sm:h-[min(920px,calc(100dvh_-_2rem))] bg-white sm:rounded-[44px] sm:border-[10px] sm:border-neutral-800/10 sm:shadow-[0_20px_50px_rgba(0,0,0,0.12)] relative flex flex-col overflow-hidden">
+        {/* Toast Notification */}
+        {toastMsg && (
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 bg-emerald-700 text-white font-bold px-4 py-2 rounded-full text-xs shadow-xl flex items-center gap-2 animate-in fade-in slide-in-from-top-3">
+            <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+            <span>{toastMsg}</span>
+          </div>
+        )}
+
         {/* Hardware Status Bar */}
         <div className="w-full bg-white/95 backdrop-blur-md z-30 pt-2.5 px-6 pb-1.5 flex items-center justify-between text-xs font-bold text-neutral-900 select-none border-b border-neutral-200/80">
           <span>{currentTime}</span>
@@ -1979,12 +2136,15 @@ export const AdminApp: React.FC<AdminAppProps> = ({
         </div>
 
         {/* Scrollable Mobile App Body */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-white text-neutral-900 flex flex-col">
+                {/* Scrollable Mobile App Body
+            NOTE: intentionally NOT `relative` — modal overlays use
+            `absolute inset-0` and must anchor to the phone shell itself. */}
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden bg-white text-neutral-900 flex flex-col">
           {!isAdminAuthenticated ? (
             /* ADMIN LOGIN SCREEN */
             <div className="relative flex-1 p-4 flex flex-col justify-center space-y-4">
               {/* Per-role dark mode toggle (guest scope until the admin signs in) */}
-              <div className="absolute top-3 right-3 z-20">
+              <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
                 <ThemeToggleButton id="btn-admin-theme-toggle" />
               </div>
               <div className="text-center space-y-2 pt-4">
@@ -2429,6 +2589,73 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                     </button>
                   </div>
 
+                  {/* ALL MESSAGES: every user conversation in one fast list */}
+                  <button
+                    type="button"
+                    onClick={() => setShowAllMessages((prev) => !prev)}
+                    className={`w-full py-2 rounded-xl border text-[11px] font-black flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-[0.98] ${
+                      showAllMessages
+                        ? 'bg-emerald-700 text-white border-emerald-700'
+                        : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                    }`}
+                    title="See every user's chat at a glance"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>{showAllMessages ? 'Back to All Users' : 'All Messages'}</span>
+                    {!showAllMessages && adminUnreadTotal > 0 && (
+                      <span className="text-[9px] font-black bg-rose-500 text-white px-1.5 py-0.5 rounded-full">
+                        {adminUnreadTotal} unread
+                      </span>
+                    )}
+                  </button>
+
+                  {showAllMessages ? (
+                    <div className="space-y-2">
+                      {adminUserChatSummaries.length === 0 ? (
+                        <div className="bg-white border border-neutral-200 rounded-3xl p-6 text-center text-xs text-neutral-500">
+                          No user conversations yet. Messages sent by farmers and buyers will appear here.
+                        </div>
+                      ) : (
+                        adminUserChatSummaries.map(({ user: u, last, unread, count }) => (
+                          <button
+                            key={u.id}
+                            type="button"
+                            onClick={() => handleOpenUserChatById(u.id)}
+                            className="w-full text-left bg-white border border-neutral-200 hover:border-emerald-400 rounded-3xl p-3 space-y-1.5 shadow-xs transition-colors cursor-pointer active:scale-[0.99]"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              {u.avatar ? (
+                                <img src={u.avatar} alt={u.name} className="w-9 h-9 rounded-2xl object-cover border border-neutral-200 flex-shrink-0" />
+                              ) : (
+                                <div className="w-9 h-9 rounded-2xl bg-emerald-100 text-emerald-900 border border-emerald-200 flex items-center justify-center font-bold text-xs flex-shrink-0">
+                                  {u.name.charAt(0)}
+                                </div>
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <h4 className="font-bold text-xs text-neutral-900 truncate">{u.name}</h4>
+                                  {unread > 0 && (
+                                    <span className="text-[9px] font-black bg-rose-500 text-white px-1.5 py-0.5 rounded-full flex-shrink-0">
+                                      {unread} NEW
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[10px] text-neutral-500 font-bold uppercase">{u.role}</p>
+                              </div>
+                            </div>
+                            <p className={`text-[11px] truncate ${unread > 0 ? 'font-bold text-neutral-900' : 'text-neutral-500'}`}>
+                              {last
+                                ? `${last.senderRole === 'admin' ? 'You: ' : ''}${last.imageUrl && !last.text ? '📷 Photo' : chatPhotoPreviewText(last.text)}`
+                                : 'No messages yet — tap to start the conversation'}
+                            </p>
+                            <p className="text-[9px] text-neutral-400 font-mono">
+                              {count} message{count === 1 ? '' : 's'}{last ? ` · last at ${last.timestamp}` : ''}
+                            </p>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  ) : (
                   <div className="space-y-2.5">
                     {filteredUsers.length === 0 ? (
                       <div className="bg-white border border-neutral-200 rounded-3xl p-6 text-center text-xs text-neutral-500">
@@ -2554,6 +2781,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                       })
                     )}
                   </div>
+                  )}
                 </div>
               )}
 
@@ -4749,8 +4977,8 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
       {/* Edit User Modal */}
       {editingUser && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-5 max-w-sm w-full space-y-3 shadow-xl max-h-[90vh] overflow-y-auto">
+        <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-5 max-w-sm w-full space-y-3 shadow-xl max-h-[85%] overflow-y-auto">
             <div className="flex items-center justify-between border-b pb-2">
               <div>
                 <h3 className="font-bold text-sm text-neutral-900">Edit Profile: {editingUser.name}</h3>
@@ -4826,7 +5054,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
       {/* Buy Produce from Farmer Modal (shelving happens later via Put in Stock) */}
       {buyingProduceItem && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-5 max-w-sm w-full space-y-3.5 shadow-2xl border border-emerald-200 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-emerald-100 pb-2.5">
               <div className="flex items-center gap-2">
@@ -5014,7 +5242,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
       {/* Edit Produce Modal */}
       {editingProduceItem && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-5 max-w-sm w-full space-y-3 shadow-xl">
             <div className="flex items-center justify-between border-b pb-2">
               <h3 className="font-bold text-sm text-neutral-900">Edit Crop: {editingProduceItem.name}</h3>
@@ -5226,7 +5454,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
       {/* DECLINE STORE PICKUP ORDER MODAL */}
       {adminOrderToCancel && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150">
+        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150">
           <div className="bg-white rounded-3xl max-w-sm w-full p-4 space-y-3.5 shadow-2xl border border-rose-200 animate-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-rose-100 pb-2.5">
               <div className="flex items-center gap-2">
@@ -5440,7 +5668,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
       {/* CHAT FARMER MODAL (ADMIN TO FARMER DIRECT CHAT) */}
       {chattingProduce && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150">
+        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150">
           <div className="bg-white rounded-3xl max-w-sm w-full max-h-[92%] flex flex-col shadow-2xl border border-emerald-200 animate-in zoom-in-95 duration-150 overflow-hidden">
             {/* Modal Header */}
             <div className="bg-gradient-to-r from-emerald-800 to-teal-800 text-white p-3.5 flex items-center justify-between">
@@ -5451,7 +5679,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
                     <h3 className="font-bold text-xs truncate">
-                      {chattingProduce.farmerName}
+                      {chattingUser?.name || chattingProduce.farmerName}
                     </h3>
                     <span className="text-[9px] bg-emerald-500 text-white font-bold px-1.5 py-0.2 rounded uppercase">
                       {chattingUser?.role || (chattingProduce.id.startsWith('user-chat-') ? 'User' : 'Farmer')}
@@ -5488,7 +5716,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
             )}
 
             {/* Messages Scroll Area */}
-            <div className="flex-1 p-3 overflow-y-auto space-y-2 bg-neutral-50 min-h-[190px] max-h-[270px]">
+            <div ref={farmerChatScrollRef} className="flex-1 p-3 overflow-y-auto space-y-2 bg-neutral-50 min-h-[190px] max-h-[270px]">
               {farmerConversation.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center p-4 text-xs text-neutral-500 space-y-1">
                   <MessageSquare className="w-8 h-8 text-neutral-300 stroke-[1.5]" />
@@ -5507,15 +5735,43 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                       key={m.id}
                       className={`flex flex-col ${isAdminMsg ? 'items-end' : 'items-start'}`}
                     >
-                      <div
-                        className={`max-w-[85%] px-3 py-2 rounded-2xl text-xs ${
-                          isAdminMsg
-                            ? 'bg-emerald-700 text-white rounded-br-xs'
-                            : 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-xs shadow-2xs'
-                        }`}
-                      >
-                        <p className="break-words leading-relaxed">{m.text}</p>
-                      </div>
+                      {m.imageUrl ? (
+                        /* Photo message (with optional caption below) */
+                        <div className="max-w-[85%] space-y-1">
+                          <img
+                            src={m.imageUrl}
+                            alt={`Photo from ${m.senderName || 'chat'}`}
+                            onClick={() => window.open(m.imageUrl, '_blank')}
+                            onLoad={pinFarmerChatToBottom}
+                            className={`w-44 max-w-full h-auto object-cover rounded-2xl cursor-pointer hover:opacity-90 transition-opacity ${
+                              isAdminMsg
+                                ? 'border border-emerald-500/40 rounded-br-xs'
+                                : 'border border-neutral-200 rounded-bl-xs'
+                            }`}
+                          />
+                          {m.text && m.text.trim() && (
+                            <div
+                              className={`px-3 py-2 rounded-2xl text-xs ${
+                                isAdminMsg
+                                  ? 'bg-emerald-700 text-white rounded-br-xs'
+                                  : 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-xs shadow-2xs'
+                              }`}
+                            >
+                              <p className="break-words leading-relaxed">{m.text}</p>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div
+                          className={`max-w-[85%] px-3 py-2 rounded-2xl text-xs ${
+                            isAdminMsg
+                              ? 'bg-emerald-700 text-white rounded-br-xs'
+                              : 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-xs shadow-2xs'
+                          }`}
+                        >
+                          <p className="break-words leading-relaxed">{m.text}</p>
+                        </div>
+                      )}
                       <span className="text-[9px] text-neutral-400 mt-0.5 px-1 font-mono">
                         {m.timestamp}
                       </span>
@@ -5525,46 +5781,92 @@ export const AdminApp: React.FC<AdminAppProps> = ({
               )}
             </div>
 
-            {/* Quick Presets */}
-            <div className="p-2 border-t border-neutral-100 bg-white flex gap-1.5 overflow-x-auto scrollbar-none">
-              <button
-                type="button"
-                onClick={() => handleSendFarmerMessage('🌾 Hi! We would like to purchase this harvest lot for the Supermarket store.')}
-                className="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[10px] font-semibold whitespace-nowrap border border-emerald-200 cursor-pointer transition-colors"
-              >
-                🛒 Buy Harvest Lot
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSendFarmerMessage('🚚 Is this produce packed and ready for morning pickup inspection?')}
-                className="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[10px] font-semibold whitespace-nowrap border border-emerald-200 cursor-pointer transition-colors"
-              >
-                🚚 Ready for Pickup?
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSendFarmerMessage('📦 Can you supply an additional lot of this crop this week?')}
-                className="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[10px] font-semibold whitespace-nowrap border border-emerald-200 cursor-pointer transition-colors"
-              >
-                📦 Extra Supply
-              </button>
-            </div>
-
             {/* Message Input Footer */}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
                 handleSendFarmerMessage();
               }}
-              className="p-2.5 bg-white border-t border-neutral-200 flex items-center gap-2"
+              className="p-2.5 bg-white border-t border-neutral-200 flex items-center gap-2 relative"
             >
+              {/* Hidden file input powering the admin chat photo button */}
+              <input
+                ref={farmerPhotoInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleFarmerPhotoPicked}
+              />
+
+              {/* Attach photo button */}
+              <button
+                type="button"
+                id="btn-admin-chat-photo"
+                onClick={() => farmerPhotoInputRef.current?.click()}
+                disabled={isSendingFarmerPhoto}
+                className="p-2 text-emerald-700 hover:bg-emerald-50 rounded-full cursor-pointer transition-colors flex-shrink-0 disabled:opacity-50"
+                title={isSendingFarmerPhoto ? 'Sending photo...' : 'Send photo'}
+              >
+                {isSendingFarmerPhoto ? (
+                  <span className="block w-4 h-4 rounded-full border-2 border-emerald-700 border-t-transparent animate-spin" />
+                ) : (
+                  <ImageIcon className="w-4 h-4" />
+                )}
+              </button>
+
+              {/* Emoji picker popover */}
+              {showFarmerEmojiPicker && (
+                <>
+                  <div
+                    className="fixed inset-0 z-30"
+                    onClick={() => setShowFarmerEmojiPicker(false)}
+                  />
+                  <div className="absolute bottom-full left-8 mb-2 z-40 w-72 max-w-[300px] bg-white border border-neutral-200 rounded-2xl shadow-lg p-2 animate-in fade-in zoom-in-95 duration-150">
+                    <div className="flex items-center justify-between px-1 pb-1.5">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Emoji</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowFarmerEmojiPicker(false)}
+                        className="p-0.5 text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-8 gap-0.5 max-h-40 overflow-y-auto">
+                      {CHAT_EMOJIS.map((em, i) => (
+                        <button
+                          key={`${em}-${i}`}
+                          type="button"
+                          onClick={() => setFarmerChatText((prev) => prev + em)}
+                          className="text-lg leading-none p-1 rounded-lg hover:bg-emerald-50 active:scale-90 transition-transform cursor-pointer"
+                          title={`Add ${em}`}
+                        >
+                          {em}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+
               <input
                 type="text"
                 value={farmerChatText}
                 onChange={(e) => setFarmerChatText(e.target.value)}
-                placeholder={`Message ${chattingProduce.farmerName}...`}
+                placeholder={`Message ${chattingUser?.name || chattingProduce.farmerName}...`}
                 className="flex-1 bg-neutral-100 border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:border-emerald-600 focus:bg-white"
               />
+              <button
+                type="button"
+                id="btn-admin-chat-emoji"
+                onClick={() => setShowFarmerEmojiPicker((prev) => !prev)}
+                className={`p-2 rounded-full cursor-pointer transition-colors flex-shrink-0 ${
+                  showFarmerEmojiPicker ? 'text-emerald-800 bg-emerald-100' : 'text-emerald-700 hover:bg-emerald-50'
+                }`}
+                title="Emoji"
+              >
+                <Smile className="w-4 h-4" />
+              </button>
               <button
                 type="submit"
                 disabled={!farmerChatText.trim()}

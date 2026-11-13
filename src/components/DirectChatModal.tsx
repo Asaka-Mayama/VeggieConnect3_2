@@ -8,7 +8,6 @@ import {
   Send,
   ThumbsUp,
   Image as ImageIcon,
-  PlusCircle,
   Smile,
   Mic,
   Check,
@@ -22,6 +21,7 @@ import {
   BellOff
 } from 'lucide-react';
 import { DirectMessage, UserRole, UserProfile } from '../types';
+import { CHAT_EMOJIS, chatPhotoPreviewText, fileToChatPhotoDataUrl } from '../utils/chatImage';
 
 export interface ChatContact {
   id: string;
@@ -41,7 +41,7 @@ interface DirectChatModalProps {
   currentUser: UserProfile | null;
   activePartner: ChatContact | null;
   messages: DirectMessage[];
-  onSendMessage: (text: string, partner: ChatContact) => void;
+  onSendMessage: (text: string, partner: ChatContact, imageUrl?: string) => void;
   onSelectPartner: (partner: ChatContact) => void;
   availableContacts: ChatContact[];
   isChatBoxOpen?: boolean;
@@ -64,7 +64,10 @@ export const DirectChatModal: React.FC<DirectChatModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [filterRole, setFilterRole] = useState<'all' | 'farmer' | 'buyer'>('all');
   const [inputText, setInputText] = useState('');
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isSendingPhoto, setIsSendingPhoto] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const photoInputRef = useRef<HTMLInputElement>(null);
 
   const currentUserId = currentUser?.id || 'me';
 
@@ -233,6 +236,29 @@ export const DirectChatModal: React.FC<DirectChatModalProps> = ({
     if (!inputText.trim() || !activePartner) return;
     onSendMessage(inputText.trim(), activePartner);
     setInputText('');
+    setShowEmojiPicker(false);
+  };
+
+  // Photo attachment: compress the picked image and send it right away
+  const handlePhotoPicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-picking the same photo later
+    if (!file || !activePartner) return;
+    setIsSendingPhoto(true);
+    try {
+      const dataUrl = await fileToChatPhotoDataUrl(file);
+      onSendMessage('', activePartner, dataUrl);
+      setShowEmojiPicker(false);
+    } catch (err: any) {
+      console.log('Photo attach failed:', err?.message || err);
+    } finally {
+      setIsSendingPhoto(false);
+    }
+  };
+
+  // Emoji picker: append the tapped emoji to the input text
+  const handleEmojiTap = (emoji: string) => {
+    setInputText((prev) => prev + emoji);
   };
 
   // Handle Facebook Thumbs-up
@@ -498,6 +524,32 @@ export const DirectChatModal: React.FC<DirectChatModalProps> = ({
                       <div className="text-4xl py-1 px-1 select-none animate-bounce">
                         👍
                       </div>
+                    ) : msg.imageUrl ? (
+                      /* Photo message (with optional caption text below) */
+                      <div className="space-y-1">
+                        <img
+                          src={msg.imageUrl}
+                          alt={`Photo from ${msg.senderName || 'chat'}`}
+                          onClick={() => window.open(msg.imageUrl, '_blank')}
+                          onLoad={scrollToBottom}
+                          className={`w-52 max-w-full h-auto object-cover rounded-2xl cursor-pointer hover:opacity-90 transition-opacity ${
+                            isMe
+                              ? 'border border-emerald-500/40 rounded-br-xs'
+                              : 'border border-emerald-200 rounded-bl-xs'
+                          }`}
+                        />
+                        {msg.text && msg.text.trim() && (
+                          <div
+                            className={`px-3.5 py-2 text-xs leading-relaxed shadow-xs break-words ${
+                              isMe
+                                ? 'bg-emerald-600 text-white rounded-2xl rounded-br-xs'
+                                : 'bg-white text-neutral-900 border border-emerald-100 rounded-2xl rounded-bl-xs'
+                            }`}
+                          >
+                            {msg.text}
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <div
                         className={`px-3.5 py-2 text-xs leading-relaxed shadow-xs break-words ${
@@ -530,22 +582,31 @@ export const DirectChatModal: React.FC<DirectChatModalProps> = ({
         {/* Messenger Footer Input Bar */}
         <form
           onSubmit={handleSend}
-          className="p-2.5 bg-white border-t border-emerald-100 flex items-center gap-2"
+          className="p-2.5 bg-white border-t border-emerald-100 flex items-center gap-2 relative"
         >
-          {/* Action icon buttons */}
+          {/* Hidden file input powering the photo button */}
+          <input
+            ref={photoInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handlePhotoPicked}
+          />
+
+          {/* Attach photo button */}
           <button
             type="button"
-            className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-full transition-colors cursor-pointer flex-shrink-0"
-            title="Add media"
+            id="btn-messenger-photo"
+            onClick={() => photoInputRef.current?.click()}
+            disabled={isSendingPhoto}
+            className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-full transition-colors cursor-pointer flex-shrink-0 disabled:opacity-50"
+            title={isSendingPhoto ? 'Sending photo...' : 'Send photo'}
           >
-            <PlusCircle className="w-5 h-5" />
-          </button>
-          <button
-            type="button"
-            className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-full transition-colors cursor-pointer flex-shrink-0"
-            title="Attach harvest photo"
-          >
-            <ImageIcon className="w-5 h-5" />
+            {isSendingPhoto ? (
+              <span className="block w-5 h-5 rounded-full border-2 border-emerald-600 border-t-transparent animate-spin" />
+            ) : (
+              <ImageIcon className="w-5 h-5" />
+            )}
           </button>
 
           {/* Messenger Input Pill */}
@@ -558,9 +619,48 @@ export const DirectChatModal: React.FC<DirectChatModalProps> = ({
               placeholder="Aa"
               className="w-full bg-emerald-50/50 border border-emerald-200 text-neutral-900 placeholder-neutral-400 text-xs px-3.5 py-2 rounded-full focus:outline-none focus:border-emerald-600 focus:bg-white transition-all"
             />
+            {/* Emoji picker popover */}
+            {showEmojiPicker && (
+              <>
+                <div
+                  className="fixed inset-0 z-30"
+                  onClick={() => setShowEmojiPicker(false)}
+                />
+                <div className="absolute bottom-full right-0 mb-2 z-40 w-64 max-w-[240px] bg-white border border-emerald-200 rounded-2xl shadow-lg p-2 animate-in fade-in zoom-in-95 duration-150">
+                  <div className="flex items-center justify-between px-1 pb-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Emoji</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowEmojiPicker(false)}
+                      className="p-0.5 text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-8 gap-0.5 max-h-40 overflow-y-auto">
+                    {CHAT_EMOJIS.map((em, i) => (
+                      <button
+                        key={`${em}-${i}`}
+                        type="button"
+                        onClick={() => handleEmojiTap(em)}
+                        className="text-lg leading-none p-1 rounded-lg hover:bg-emerald-50 active:scale-90 transition-transform cursor-pointer"
+                        title={`Add ${em}`}
+                      >
+                        {em}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
             <button
               type="button"
-              className="absolute right-2 text-emerald-600 hover:text-emerald-800 p-1 transition-colors cursor-pointer"
+              id="btn-messenger-emoji"
+              onClick={() => setShowEmojiPicker((prev) => !prev)}
+              className={`absolute right-2 p-1 transition-colors cursor-pointer rounded-full ${
+                showEmojiPicker ? 'text-emerald-800 bg-emerald-100' : 'text-emerald-600 hover:text-emerald-800'
+              }`}
+              title="Emoji"
             >
               <Smile className="w-4 h-4" />
             </button>
@@ -806,7 +906,8 @@ export const DirectChatModal: React.FC<DirectChatModalProps> = ({
             let previewText = contact.isOnline !== false ? 'Active on Direct Chat' : `Offline · ${contact.lastActive || 'Seen recently'}`;
             if (lastMessage) {
               const prefix = isMe ? 'You: ' : `${lastMessage.senderName?.split(' ')[0] || ''}: `;
-              previewText = `${prefix}${lastMessage.text}`;
+              // Photo-only messages preview as 📷 Photo instead of a blank line
+              previewText = `${prefix}${chatPhotoPreviewText(lastMessage.text)}`;
             } else if (contact.role === 'admin' || contact.id === 'admin-main') {
               previewText = 'VeggieConnect Store Seller · Tap to chat';
             } else if (contact.role === 'farmer') {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sprout, MapPin } from 'lucide-react';
+import { Sprout } from 'lucide-react';
 import { UserRole, UserProfile } from '../types';
 import { ThemeToggleButton } from './ThemeToggleButton';
 
@@ -8,8 +8,6 @@ interface HeaderProps {
   currentUser: UserProfile | null;
   onLogout: () => void;
   onOpenEditProfile?: () => void;
-  activeLocation: string;
-  onLocationClick?: () => void;
   onNotificationClick?: () => void;
   onOpenPriceWatch?: () => void;
 }
@@ -19,15 +17,11 @@ export const Header: React.FC<HeaderProps> = ({
   currentUser,
   onLogout,
   onOpenEditProfile,
-  activeLocation,
-  onLocationClick,
   onNotificationClick,
   onOpenPriceWatch,
 }) => {
   const roleLabel =
     userRole === 'admin' ? 'Admin' : userRole === 'farmer' ? 'Farmer' : 'Buyer';
-  // Keep the header compact: show only the city/segment before the first comma.
-  const shortLocation = (activeLocation || '').split(',')[0].trim() || activeLocation;
 
   return (
     <header className="sticky top-0 z-20 bg-white/95 backdrop-blur-md border-b border-emerald-100 px-3.5 py-2.5 shadow-xs">
@@ -42,22 +36,8 @@ export const Header: React.FC<HeaderProps> = ({
           </h1>
         </div>
 
-        {/* Compact controls: location + DA prices */}
+        {/* Compact controls: theme + DA prices */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          {onLocationClick && (
-            <button
-              id="btn-location-select"
-              onClick={onLocationClick}
-              className="flex items-center gap-1 min-w-0 min-h-[32px] px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200/80 hover:bg-emerald-100 transition-colors cursor-pointer"
-              title={activeLocation}
-            >
-              <MapPin className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
-              <span className="text-[10px] text-emerald-900 font-bold truncate max-w-[92px]">
-                {shortLocation}
-              </span>
-            </button>
-          )}
-
           {/* Per-role dark mode toggle — saved separately for this account's role */}
           <ThemeToggleButton id="btn-theme-toggle" />
 

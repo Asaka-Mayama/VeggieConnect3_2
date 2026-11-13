@@ -89,7 +89,7 @@ export const MobileFrame: React.FC<MobileFrameProps> = ({
       <div
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        className="w-full max-w-[430px] min-h-screen sm:min-h-[860px] sm:max-h-[920px] bg-white sm:rounded-[44px] sm:border-[10px] sm:border-neutral-800/10 sm:shadow-[0_20px_50px_rgba(0,0,0,0.12)] relative flex flex-col overflow-hidden"
+        className="w-full max-w-[430px] h-[100dvh] sm:h-[min(920px,calc(100dvh_-_2rem))] bg-white sm:rounded-[44px] sm:border-[10px] sm:border-neutral-800/10 sm:shadow-[0_20px_50px_rgba(0,0,0,0.12)] relative flex flex-col overflow-hidden"
       >
         {/* Smartphone Hardware Status Bar */}
         <div className="w-full bg-white/95 backdrop-blur-md z-30 pt-2.5 px-6 pb-1.5 flex items-center justify-between text-xs font-bold text-neutral-900 select-none border-b border-neutral-200/80">
@@ -117,7 +117,13 @@ export const MobileFrame: React.FC<MobileFrameProps> = ({
         </div>
 
         {/* Scrollable App Body */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-white text-neutral-900 flex flex-col">
+                {/* Scrollable App Body
+            NOTE: intentionally NOT `relative` — in-app modal overlays use
+            `absolute inset-0` so they anchor to the phone shell itself.
+            This keeps every modal (e.g. the buyer Vegetable Purchase Request)
+            locked INSIDE the app frame instead of covering the whole browser
+            window, no matter how far the content is scrolled. */}
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden bg-white text-neutral-900 flex flex-col">
           {children}
         </div>
 

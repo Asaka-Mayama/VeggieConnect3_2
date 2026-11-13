@@ -17,6 +17,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { CartItem, Order, OrderItem, UserProfile } from '../types';
+import { farmerUnitPrice, withAdminCommission } from '../utils/pricing';
 
 interface CartDrawerProps {
   cart: CartItem[];
@@ -51,12 +52,14 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     }
   }, [currentUser]);
 
-  // Subtotal calculation
+  // Subtotal calculation — buyers pay the market price: farmer asking price
+  // plus the Admin's per-kg commission (wholesale discount applies on top).
   const subtotal = cart.reduce((sum, item) => {
+    const marketUnit = withAdminCommission(item.produce.pricePerUnit);
     const unitPrice =
       item.produce.bulkDiscount && item.quantity >= item.produce.bulkDiscount.minQty
-        ? item.produce.pricePerUnit * (1 - item.produce.bulkDiscount.discountPercent / 100)
-        : item.produce.pricePerUnit;
+        ? Math.round(marketUnit * (1 - item.produce.bulkDiscount.discountPercent / 100) * 100) / 100
+        : marketUnit;
     return sum + unitPrice * item.quantity;
   }, 0);
 
@@ -87,17 +90,32 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
 
     setIsSubmitting(true);
 
-    const orderItems: OrderItem[] = cart.map((item) => ({
-      produceId: item.produce.id,
-      produceName: item.produce.name,
-      imageUrl: item.produce.imageUrl,
-      unitPrice: item.produce.pricePerUnit,
-      pricePerUnit: item.produce.pricePerUnit,
-      unit: item.produce.unit || 'kg',
-      quantity: item.quantity,
-      farmName: 'VeggieConnect Central Market',
-      farmerId: 'admin-main',
-    }));
+    const orderItems: OrderItem[] = cart.map((item) => {
+      const farmgateUnit = farmerUnitPrice(item.produce);
+      // Buyer pays the market per-kg price (farmgate + Admin commission);
+      // the wholesale discount, when active, applies on that market price.
+      const marketUnit = withAdminCommission(farmgateUnit);
+      const paidUnit =
+        item.produce.bulkDiscount && item.quantity >= item.produce.bulkDiscount.minQty
+          ? Math.round(marketUnit * (1 - item.produce.bulkDiscount.discountPercent / 100) * 100) / 100
+          : marketUnit;
+      return {
+        produceId: item.produce.id,
+        produceName: item.produce.name,
+        imageUrl: item.produce.imageUrl,
+        unitPrice: paidUnit,
+        pricePerUnit: paidUnit,
+        farmgateUnitPrice: farmgateUnit,
+        unit: item.produce.unit || 'kg',
+        quantity: item.quantity,
+        farmName: 'VeggieConnect Central Market',
+        farmerId: 'admin-main',
+      };
+    });
+
+    // Admin commission per kg = market price − farmer asking price.
+    const farmgateCostTotal = Math.round(orderItems.reduce((s, it) => s + (it.farmgateUnitPrice || 0) * (it.quantity || 0), 0) * 100) / 100;
+    const adminCommissionTotal = Math.round((subtotal - farmgateCostTotal) * 100) / 100;
 
     // Buyer Request: Buyer submits a request/order to the Admin detailing vegetables & quantities
     const newOrder: Order = {
@@ -113,6 +131,8 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       subtotal,
       deliveryFee: 0,
       totalAmount,
+      farmgateCostTotal,
+      adminCommissionTotal,
       status: 'pending', // Buyer Request Submitted, waiting for Admin Processing
       createdAt: new Date().toISOString(),
       farmerId: 'admin-main',
@@ -190,9 +210,10 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
             <div className="space-y-2.5">
               {cart.map(({ produce, quantity }) => {
                 const bulkActive = Boolean(produce.bulkDiscount && quantity >= produce.bulkDiscount.minQty);
+                const marketUnit = withAdminCommission(produce.pricePerUnit);
                 const itemUnitPrice = bulkActive
-                  ? produce.pricePerUnit * (1 - produce.bulkDiscount!.discountPercent / 100)
-                  : produce.pricePerUnit;
+                  ? Math.round(marketUnit * (1 - produce.bulkDiscount!.discountPercent / 100) * 100) / 100
+                  : marketUnit;
                 const lineTotal = (itemUnitPrice * quantity).toFixed(2);
 
                 return (

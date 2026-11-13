@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Sprout, ShoppingBag, Lock, Phone, Mail, MapPin, User, ArrowRight, CheckCircle2, AlertCircle, Shield } from 'lucide-react';
 import { UserRole, UserProfile } from '../types';
-import { resolveCoordinates } from '../utils/geoDistance';
+import { AddressMapPickerModal } from './AddressMapPickerModal';
 import { ThemeToggleButton } from './ThemeToggleButton';
 
 interface LoginRegisterViewProps {
@@ -48,6 +48,13 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
   const [regLocation, setRegLocation] = useState('Dumaguete City, Negros Oriental');
   const [regFarmName, setRegFarmName] = useState('');
   const [regError, setRegError] = useState<string | null>(null);
+
+  // MAP-REQUIRED REGISTRATION: the account can ONLY be created after the user
+  // pins their exact location on the Google Map. A typed address alone is not
+  // accepted — "set location first on the map, then create the account".
+  const [pinnedLocation, setPinnedLocation] = useState<{ address: string; lat: number; lng: number } | null>(null);
+  const [showRegMap, setShowRegMap] = useState(false);
+  const continueSignupAfterPinRef = React.useRef(false);
 
   const saveRegisteredUser = (user: UserProfile) => {
     const users = getRegisteredUsers();
@@ -117,6 +124,63 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
   };
 
   // Handle Registration
+  const createAccount = async (pin: { address: string; lat: number; lng: number }) => {
+    setIsSubmitting(true);
+
+    const trimmedName = regName.trim();
+    const rawPhone = regPhone.trim();
+    const rawEmail = rawEmailSafe(regEmail.trim());
+
+    const newUser: UserProfile = {
+      id: `user-${Date.now()}`,
+      name: trimmedName,
+      email: rawEmail || `${trimmedName.toLowerCase().replace(/\s+/g, '')}@dgte-agri.ph`,
+      phone: rawPhone,
+      role: selectedRole,
+      // Location comes strictly from the confirmed map pin (never a typed guess)
+      location: pin.address,
+      latitude: pin.lat,
+      longitude: pin.lng,
+      farmName: selectedRole === 'farmer' ? regFarmName.trim() : undefined,
+      avatar: '',
+      verified: true,
+      status: 'active',
+    };
+
+    // The backend is the single source of truth for the account identity.
+    // Continue the session with the account the SERVER actually stored — its id
+    // is what every crop listing, order and chat will be linked to.
+    let registeredUser: UserProfile = newUser;
+    try {
+      const resp = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...newUser,
+          password: regPassword,
+        }),
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        setRegError(data.error || 'Failed to register account.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (data.user && data.user.id) {
+        registeredUser = data.user;
+      }
+    } catch (err) {
+      console.log('Backend signup notice:', err);
+    } finally {
+      setIsSubmitting(false);
+    }
+
+    saveRegisteredUser(registeredUser);
+    onLoginSuccess(registeredUser);
+  };
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setRegError(null);
@@ -147,7 +211,7 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
 
     // Local Duplicate Validations across all existing users
     const existingUsers = getRegisteredUsers();
-    
+
     // Check duplicate name
     const dupName = existingUsers.find((u) => u.name && u.name.trim().toLowerCase() === normName);
     if (dupName) {
@@ -173,60 +237,18 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
       }
     }
 
-    setIsSubmitting(true);
-
-    const resolvedCoords = resolveCoordinates(regLocation);
-
-    const newUser: UserProfile = {
-      id: `user-${Date.now()}`,
-      name: trimmedName,
-      email: rawEmail || `${trimmedName.toLowerCase().replace(/\s+/g, '')}@dgte-agri.ph`,
-      phone: rawPhone,
-      role: selectedRole,
-      location: regLocation.trim(),
-      latitude: resolvedCoords.lat,
-      longitude: resolvedCoords.lng,
-      farmName: selectedRole === 'farmer' ? regFarmName.trim() : undefined,
-      avatar: '',
-      verified: true,
-      status: 'active',
-    };
-
-    // The backend is the single source of truth for the account identity.
-    // Continue the session with the account the SERVER actually stored — its id
-    // is what every crop listing, order and chat will be linked to. Logging in
-    // with the locally generated object used to split one farmer into two ids
-    // (client id for crops, server id after re-login), which made their own
-    // crops invisible on their dashboard while still showing in the Market.
-    let registeredUser: UserProfile = newUser;
-    try {
-      const resp = await fetch('/api/auth/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...newUser,
-          password: regPassword,
-        }),
-      });
-
-      const data = await resp.json();
-      if (!resp.ok) {
-        setRegError(data.error || 'Failed to register account.');
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (data.user && data.user.id) {
-        registeredUser = data.user;
-      }
-    } catch (err) {
-      console.log('Backend signup notice:', err);
-    } finally {
-      setIsSubmitting(false);
+    // REQUIREMENT: the user must set their location on the map FIRST.
+    // No account is ever created from a typed address alone — open the
+    // map picker now and continue signup automatically after the pin is
+    // confirmed.
+    if (!pinnedLocation) {
+      continueSignupAfterPinRef.current = true;
+      setShowRegMap(true);
+      setRegError('Please pin your exact location on the map to create your account.');
+      return;
     }
 
-    saveRegisteredUser(registeredUser);
-    onLoginSuccess(registeredUser);
+    await createAccount(pinnedLocation);
   };
 
   function rawEmailSafe(str: string) {
@@ -313,6 +335,7 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
   }
 
   return (
+    <>
     <div className="relative min-h-full flex flex-col justify-center px-4 py-8 max-w-md mx-auto w-full text-neutral-900 bg-[#f4f9f4]">
       {/* Per-role dark mode toggle (guest scope before logging in) */}
       <div className="absolute top-3 right-3 z-20">
@@ -575,23 +598,43 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
             </div>
           </div>
 
-          {/* Location in Negros Oriental */}
+          {/* Location — REQUIRED: must be pinned on the map before account creation */}
           <div>
-            <label className="block text-xs font-semibold text-emerald-950 mb-1">
-              Location / Municipality
-            </label>
-            <div className="relative">
-              <MapPin className="w-4 h-4 text-emerald-600 absolute left-3 top-3" />
-              <input
-                id="input-reg-location"
-                type="text"
-                placeholder="Valencia / Dumaguete City / Sibulan / Dauin"
-                value={regLocation}
-                onChange={(e) => setRegLocation(e.target.value)}
-                className="w-full bg-emerald-50/40 border border-emerald-200 rounded-xl py-2.5 pl-9 pr-3 text-xs text-neutral-900 placeholder-neutral-400 focus:outline-none focus:border-emerald-600 focus:bg-white"
-                required
-              />
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-semibold text-emerald-950">
+                Location / Municipality
+              </label>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                  pinnedLocation
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-amber-100 text-amber-700'
+                }`}
+              >
+                {pinnedLocation ? '✓ Pinned on Map' : 'Map Pin Required'}
+              </span>
             </div>
+            <button
+              id="btn-open-reg-map"
+              type="button"
+              onClick={() => {
+                continueSignupAfterPinRef.current = false;
+                setShowRegMap(true);
+              }}
+              className="w-full bg-emerald-50/40 border border-emerald-200 hover:border-emerald-500 rounded-xl py-2.5 pl-9 pr-3 text-left text-xs text-neutral-900 transition-colors cursor-pointer relative"
+              title="Open the map to pin your exact location"
+            >
+              <MapPin className="w-4 h-4 text-emerald-600 absolute left-3 top-3" />
+              <span className={`block truncate ${pinnedLocation ? 'font-semibold' : 'text-neutral-500'}`}>
+                {pinnedLocation
+                  ? pinnedLocation.address
+                  : `${regLocation} — tap to pin on map`}
+              </span>
+            </button>
+            <p className="text-[10px] text-neutral-500 mt-1 flex items-center gap-1">
+              <MapPin className="w-3 h-3 text-emerald-600 flex-shrink-0" />
+              Required: set your exact location on the map before creating your account
+            </p>
           </div>
 
           {/* Role-specific fields */}
@@ -642,7 +685,51 @@ export const LoginRegisterView: React.FC<LoginRegisterViewProps> = ({
           </div>
         </form>
       )}
+
+      {/* Subtle build marker — lets the owner confirm which build is running. */}
+      <p className="text-center text-[10px] text-neutral-400 pt-5 pb-1 select-none">
+        VeggieConnect · Build v3.2.1
+      </p>
     </div>
+
+      {/* REQUIRED LOCATION MAP PICKER
+          The account is ONLY created after the user pins their exact location
+          on the Google Map (buyer: house / delivery address, farmer: farm
+          location). Rendered as a sibling of the login root so `absolute
+          inset-0` anchors to the phone shell — it always fits INSIDE the
+          app frame, exactly like every other in-app modal. */}
+      {showRegMap && (
+        <AddressMapPickerModal
+          title={selectedRole === 'farmer' ? 'Set Your Farm Location' : 'Set Your Location'}
+          subtitle={
+            selectedRole === 'farmer'
+              ? 'Pin your exact farm location on the map — required to create your account'
+              : 'Pin your exact house / delivery address on the map — required to create your account'
+          }
+          initialAddress={pinnedLocation ? pinnedLocation.address : regLocation}
+          initialLat={pinnedLocation ? pinnedLocation.lat : undefined}
+          initialLng={pinnedLocation ? pinnedLocation.lng : undefined}
+          onClose={() => {
+            setShowRegMap(false);
+            if (continueSignupAfterPinRef.current) {
+              continueSignupAfterPinRef.current = false;
+              setRegError('Location is required: pin your exact location on the map, then create your account.');
+            }
+          }}
+          onConfirmLocation={(address, lat, lng) => {
+            const pin = { address, lat, lng };
+            setPinnedLocation(pin);
+            setRegLocation(address);
+            setShowRegMap(false);
+            if (continueSignupAfterPinRef.current) {
+              continueSignupAfterPinRef.current = false;
+              setRegError(null);
+              createAccount(pin);
+            }
+          }}
+        />
+      )}
+    </>
   );
 };
 

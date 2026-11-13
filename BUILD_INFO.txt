@@ -1,4 +1,34 @@
-VeggieConnect delivery build
-Built: 2026-11-09 01:51:09
-Source: mini-services/veggieconnect (live working copy)
-Always contains the latest changes requested by the user.
+VeggieConnect3_2 source delivery
+Built: 2026-11-13 11:45 (latest — Build v3.2.1)
+How to confirm you are on THIS build:
+  The login screen shows "VeggieConnect · Build v3.2.1" at the bottom.
+  If you do NOT see that tag, you are running an older extraction —
+  replace your whole code folder with this zip and restart the app.
+
+Important: when extracting, do NOT mix with an old copy.
+  1. Close the running app (Ctrl+C).
+  2. Delete or rename your previous VeggieConnect3_2 code folder.
+  3. Extract THIS zip into a fresh folder.
+  4. `bun install` then `bun run dev` (or npm install / npm run dev).
+  5. Hard refresh the browser (Ctrl+Shift+R).
+
+What is in this build (all verified end-to-end):
+- Buyer market price = farmer's asking price + 10% Admin commission per kg
+  (market cards, produce detail modal, request builder, cart, checkout).
+  Example: farmer lists ₱35.00/kg → buyer's Market shows ₱38.50/kg.
+  Orders record the split: unitPrice 38.50 (buyer pays), farmgateUnitPrice
+  35.00 (farmer share), adminCommissionTotal per order for the Admin.
+  Farmer dashboard and admin procurement still show the farmer's full ₱35.00.
+- Buyer/farmer "Direct Chat" opens straight into the Admin conversation.
+- Two-way chat verified: user messages reach the Admin, Admin replies
+  reach the user, unread badges update.
+- Admin Users menu has the All Messages button listing every user's chat
+  with unread badges and last-message preview.
+- Admin chat: photo upload + emoji buttons working; shortcut buttons removed.
+- Community chat (farmer/buyer): photo + emoji buttons working; + removed.
+- Photos are compressed in-browser and stored with the message (works with
+  the XAMPP MySQL `data` LONGTEXT column).
+- Registration requires pinning your exact location on the map first.
+- No source-code download buttons anywhere in the UI.
+
+Setup: see README.md — requires XAMPP MySQL (127.0.0.1:3306, root) and bun/npm.

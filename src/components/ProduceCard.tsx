@@ -1,6 +1,7 @@
 import React from 'react';
 import { Flame, Sprout, FileText } from 'lucide-react';
 import { ProduceItem } from '../types';
+import { withAdminCommission } from '../utils/pricing';
 
 /**
  * Buyer-facing origin — province level only ("Negros Oriental").
@@ -41,7 +42,10 @@ export const ProduceCard: React.FC<ProduceCardProps> = ({
 }) => {
   if (!produce) return null;
 
-  const price = typeof produce.pricePerUnit === 'number' ? produce.pricePerUnit : parseFloat(produce.pricePerUnit) || 0;
+  const farmerPrice = typeof produce.pricePerUnit === 'number' ? produce.pricePerUnit : parseFloat(produce.pricePerUnit) || 0;
+  // Buyers see the farmer's asking price PLUS the Admin's per-kg commission;
+  // farmers and admin procurement views (isBuyer=false) keep the raw price.
+  const price = isBuyer ? withAdminCommission(farmerPrice) : farmerPrice;
   const stock = typeof produce.stockQuantity === 'number' ? produce.stockQuantity : parseInt(produce.stockQuantity as any, 10) || 0;
   const name = produce.name || 'Fresh Produce';
   const imageUrl = produce.imageUrl || 'https://images.unsplash.com/photo-1540420773420-3366772f4999?auto=format&fit=crop&w=600&q=80';

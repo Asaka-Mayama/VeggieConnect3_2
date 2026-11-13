@@ -104,6 +104,15 @@ export const AddressMapPickerModal: React.FC<AddressMapPickerModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isLocating, setIsLocating] = useState(false);
 
+  // REQUIREMENT ENFORCEMENT: the location can only be confirmed after the user
+  // actively set it on the map (tap, pin drag, search, landmark chip or GPS).
+  // A first-time registration starts with NO chosen pin, so Confirm stays
+  // disabled until a real interaction happens. Re-editing an already pinned
+  // location (initialLat provided) counts as a previously chosen pin.
+  const [hasPicked, setHasPicked] = useState<boolean>(
+    typeof initialLat === 'number' && !isNaN(initialLat)
+  );
+
   // Address lookup helper: immediately resolves accurate barangay/street/subdivision name
   const updateAddressFromCoords = useCallback(async (newCoords: Coordinates) => {
     // 1. Instant accurate spatial resolution for Dumaguete and Negros Oriental
@@ -228,6 +237,7 @@ export const AddressMapPickerModal: React.FC<AddressMapPickerModalProps> = ({
     setPinnedCoords(newCoords);
     setCameraTarget({ coords: newCoords, zoom: 16, key: Date.now() });
     setAddressText(`${landmark.name}, ${landmark.barangay}, ${landmark.city}, Negros Oriental`);
+    setHasPicked(true);
   };
 
   // GPS Geolocation
@@ -244,6 +254,7 @@ export const AddressMapPickerModal: React.FC<AddressMapPickerModalProps> = ({
         setPinnedCoords(newCoords);
         setCameraTarget({ coords: newCoords, zoom: 17, key: Date.now() });
         updateAddressFromCoords(newCoords);
+        setHasPicked(true);
       },
       () => {
         setIsLocating(false);
@@ -287,6 +298,7 @@ export const AddressMapPickerModal: React.FC<AddressMapPickerModalProps> = ({
               setCameraTarget({ coords: newCoords, zoom: 16, key: Date.now() });
               updateAddressFromCoords(newCoords);
               setSearchQuery('');
+              setHasPicked(true);
             }
           }
         );
@@ -299,6 +311,8 @@ export const AddressMapPickerModal: React.FC<AddressMapPickerModalProps> = ({
   };
 
   const handleSave = () => {
+    // Safety guard: never save a location the user did not actively pick
+    if (!hasPicked) return;
     const finalAddress = addressText.trim() || 'Dumaguete City, Negros Oriental';
     onConfirmLocation(finalAddress, pinnedCoords.lat, pinnedCoords.lng);
     onClose();
@@ -403,6 +417,7 @@ export const AddressMapPickerModal: React.FC<AddressMapPickerModalProps> = ({
                   };
                   setPinnedCoords(newC);
                   updateAddressFromCoords(newC);
+                  setHasPicked(true);
                 }
               }}
               className="w-full h-full"
@@ -414,6 +429,7 @@ export const AddressMapPickerModal: React.FC<AddressMapPickerModalProps> = ({
                 onPinMoved={(newCoords) => {
                   setPinnedCoords(newCoords);
                   updateAddressFromCoords(newCoords);
+                  setHasPicked(true);
                 }}
               />
             </Map>
@@ -459,6 +475,13 @@ export const AddressMapPickerModal: React.FC<AddressMapPickerModalProps> = ({
             />
           </div>
 
+          {!hasPicked && (
+            <p className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+              <MapPin className="w-3 h-3 flex-shrink-0" />
+              <span>Tap the map, drag the pin, search or use GPS to set your location first — then confirm.</span>
+            </p>
+          )}
+
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -471,10 +494,16 @@ export const AddressMapPickerModal: React.FC<AddressMapPickerModalProps> = ({
               id="btn-confirm-pinned-location"
               type="button"
               onClick={handleSave}
-              className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+              disabled={!hasPicked}
+              title={hasPicked ? 'Confirm your pinned location' : 'Tap the map to place your pin first'}
+              className={`flex-1 py-2.5 rounded-xl text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-md transition-all ${
+                hasPicked
+                  ? 'bg-emerald-600 hover:bg-emerald-500 active:scale-95 cursor-pointer'
+                  : 'bg-emerald-600/40 cursor-not-allowed opacity-70'
+              }`}
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>Confirm Location</span>
+              <span>{hasPicked ? 'Confirm Location' : 'Confirm Location (Pin Required)'}</span>
             </button>
           </div>
         </div>

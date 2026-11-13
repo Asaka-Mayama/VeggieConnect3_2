@@ -17,6 +17,7 @@ import {
   Users,
 } from 'lucide-react';
 import { Order, ProduceItem, UserProfile, TransportJob } from '../types';
+import { ADMIN_COMMISSION_RATE } from '../utils/pricing';
 
 interface AdminAnalyticsViewProps {
   orders: Order[];
@@ -41,10 +42,12 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
     const totalRevenue = validOrders.reduce((acc, o) => acc + (o.totalAmount || 0), 0);
     const completedRevenue = completedOrders.reduce((acc, o) => acc + (o.totalAmount || 0), 0);
     
-    // Farmer payout est: ~80% of subtotal or farmgateCostTotal
+    // Farmer payout: exact farmgate cost when tracked; otherwise the buyer
+    // subtotal minus the Admin per-kg commission (commission = 10% of the
+    // farmer asking price, so payout = subtotal / 1.10).
     const totalFarmerPayout = validOrders.reduce((acc, o) => {
       if (o.farmgateCostTotal) return acc + o.farmgateCostTotal;
-      return acc + (o.subtotal * 0.82);
+      return acc + ((o.subtotal || 0) / (1 + ADMIN_COMMISSION_RATE));
     }, 0);
 
     const brokerMargin = totalRevenue - totalFarmerPayout;
@@ -127,7 +130,7 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
       (Number(o.subtotal) || 0).toFixed(2),
       (Number(o.deliveryFee) || 0).toFixed(2),
       (Number(o.totalAmount ?? o.subtotal) || 0).toFixed(2),
-      (Number(o.farmgateCostTotal || (Number(o.subtotal) || 0) * 0.82) || 0).toFixed(2),
+      (Number(o.farmgateCostTotal || (Number(o.subtotal) || 0) / (1 + ADMIN_COMMISSION_RATE)) || 0).toFixed(2),
       `"${o.status}"`,
       o.rating || 'Unrated',
       `"${(o.reviewComment || '').replace(/"/g, '""')}"`,
